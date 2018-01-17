@@ -819,16 +819,6 @@ sub execute {
         count => $count // 1,
     });
 
-    # CLDR number formatters
-    my $deciform = $self->cldr->decimal_formatter(
-        minimum_fraction_digits => 2,
-        maximum_fraction_digits => 2,
-    );
-    my $percform = $self->cldr->percent_formatter(
-        minimum_fraction_digits => 0,
-        maximum_fraction_digits => 0,
-    );
-
     unless ($count) {
         $progress->message('No chunks; nothing to process...');
         return;
@@ -836,7 +826,7 @@ sub execute {
 
     if ($self->debug) {
         $progress->message(
-            sprintf "(%s total chunks; %s total rows)", map { $deciform->format($_) } ($count, $count * $self->chunk_size)
+            sprintf "(%s total chunks; %s total rows)", map { $self->cldr->decimal_formatter->format($_) } ($count, $count * $self->chunk_size)
         );
     }
 
@@ -913,25 +903,7 @@ sub execute {
         # Give the DB a little bit of breathing room
         sleep $self->sleep if $self->sleep;
 
-        if ($self->debug) {
-            $progress->message(
-                defined $ls->{chunk_count} ?    ### FIXME: Condense into a method call
-                    sprintf(
-                        "IDs %6u to %6u %9s, %9s rows found (%4s of chunk size), %5s+%5s sec runtime+sleep",
-                        $ls->{start}, $ls->{end}, 'processed',
-                        $deciform->format( $ls->{chunk_count} ),
-                        $precform->format( $ls->{chunk_count} / $self->chunk_size ),
-                        $deciform->format( time - $ls->{timer} - $self->sleep ),
-                        $deciform->format( $self->sleep || 0 )
-                    ) :
-                    sprintf(
-                        "IDs %6u to %6u %9s, %5s+%5s sec runtime+sleep",
-                        $ls->{start}, $ls->{end}, 'processed',
-                        $deciform->format( time - $ls->{timer} - $self->sleep ),
-                        $deciform->format( $self->sleep || 0 )
-                    )
-            );
-        }
+        $self->_print_debug_status($progress => 'processed');
 
         # End-of-loop activities (skipped by early next)
         $progress->increment( $ls->{multiplier_range} );
@@ -967,16 +939,6 @@ sub _chunk_resize_checker {
     my ($self, $progress) = @_;
     my $ls = $self->_loop_state;
 
-    # CLDR number formatters
-    my $deciform = $self->cldr->decimal_formatter(
-        minimum_fraction_digits => 2,
-        maximum_fraction_digits => 2,
-    );
-    my $percform = $self->cldr->percent_formatter(
-        minimum_fraction_digits => 0,
-        maximum_fraction_digits => 0,
-    );
-
     # Chunk sizing is essentially disabled, so run the max check and bounce
     if ($self->min_chunk_percent <= 0 || !defined $ls->{chunk_count}) {
         # There's no way to size this, so skip past the max as one block
@@ -996,9 +958,7 @@ sub _chunk_resize_checker {
 
     if    ($ls->{chunk_count} == 0 && $self->min_chunk_percent > 0) {
         # No rows: Skip the block entirely, and accelerate the stepping
-        $progress->message(
-            sprintf "IDs %6u to %6u %9s, %9s rows found", $ls->{start}, $ls->{end}, 'skipped', 0
-        ) if $self->debug;
+        $self->_print_debug_status($progress => 'skipped');
 
         $progress->increment( $ls->{multiplier_range} );
         $ls->{start}     = undef;
@@ -1015,12 +975,7 @@ sub _chunk_resize_checker {
     }
     elsif ($chunk_percent > 1 + $self->min_chunk_percent) {
         # Too many rows: Backtrack to the previous range and try to bisect
-        $progress->message( sprintf(
-            "IDs %6u to %6u %9s, %9s rows found (%4s of chunk size)",
-            $ls->{start}, $ls->{end}, 'shrunk',
-            $deciform->format( $ls->{chunk_count} ),
-            $percform->format( $chunk_percent ),
-        ) ) if $self->debug;
+        $self->_print_debug_status($progress => 'shrunk');
 
         $ls->{timer} = time;
 
@@ -1053,12 +1008,7 @@ sub _chunk_resize_checker {
     }
     elsif ($chunk_percent < $self->min_chunk_percent) {
         # Too few rows: Keep the start ID and accelerate towards a better endpoint
-        $progress->message( sprintf(
-            "IDs %6u to %6u %9s, %9s rows found (%4s of chunk size)",
-            $ls->{start}, $ls->{end}, 'shrunk',
-            $deciform->format( $ls->{chunk_count} ),
-            $percform->format( $chunk_percent ),
-        ) ) if $self->debug;
+        $self->_print_debug_status($progress => 'expanded');
 
         $ls->{timer} = time;
 
@@ -1075,6 +1025,50 @@ sub _chunk_resize_checker {
 
     $ls->{prev_check} = 'nothing wrong';
     return 1;
+}
+
+=head2 _print_debug_status
+
+Prints out a standard debug status line, if debug is enabled.  What it prints is
+generally uniform, but it depends on the processing action.  Most of the data is
+pulled from L</_loop_state>.
+
+=cut
+
+sub _print_debug_status {
+    my ($self, $progress, $action) = @_;
+    return unless $self->debug;
+    my $end_time = time;  # catch it early
+
+    my $ls = $self->_loop_state;
+
+    # CLDR number formatters
+    my $integer = $self->cldr->decimal_formatter;
+    my $percent = $self->cldr->percent_formatter;
+    my $decimal = $self->cldr->decimal_formatter(
+        minimum_fraction_digits => 2,
+        maximum_fraction_digits => 2,
+    );
+
+    my $message = sprintf(
+        'IDs %6u to %6u %9s, %9s rows found',
+        $ls->{start}, $ls->{end}, $action,
+        $integer->format( $ls->{chunk_count} ),
+    );
+
+    $message .= sprintf(
+        ' (%4s of chunk size)',
+        $percent->format( $ls->{chunk_count} / $self->chunk_size ),
+    ) if $ls->{chunk_count};
+
+    my $sleep = $self->sleep || 0;
+    $message .= sprintf(
+        ', %5s+%s sec runtime+sleep',
+        $decimal->format( $end_time - $ls->{timer} - $sleep ),
+        $decimal->format( $sleep )
+    ) if $action eq 'processed';
+
+    return $progress->message($message);
 }
 
 1;
