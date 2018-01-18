@@ -369,9 +369,7 @@ has coderef => (
 
 =head3 chunk_size
 
-The amount of rows to be processed in each loop.  This needs to be consistent between
-L</calculate_ranges> and L</execute>, since everything is calculated based on multipliers
-of this size.
+The amount of rows to be processed in each loop.
 
 Default is 1000 rows.  This figure should be sized to keep per-chunk processing time
 at around 10 seconds.  If this is too large, rows may lock for too long.  If it's too
@@ -484,9 +482,9 @@ has min_chunk_percent => (
     default  => sub { 0.5 },
 );
 
-=head3 min_multiplier
+=head3 min_id
 
-=head3 max_multiplier
+=head3 max_id
 
 Used by L</execute> to figure out the main start and end points.  Calculated by
 L</calculate_ranges>.
@@ -497,12 +495,12 @@ use L</calculate_ranges> to fill in these values right before running the loop.
 
 =cut
 
-has min_multiplier => (
+has min_id => (
     is       => 'rw',
     isa      => PositiveOrZeroInt,
 );
 
-has max_multiplier => (
+has max_id => (
     is       => 'rw',
     isa      => PositiveOrZeroInt,
 );
@@ -511,7 +509,7 @@ has max_multiplier => (
 
 =head3 _loop_state
 
-These variables exist solely for the multiplier loop.  They should be cleared out after
+These variables exist solely for the processing loop.  They should be cleared out after
 use.  Most of the complexity is needed for chunk resizing.
 
 =over
@@ -588,14 +586,14 @@ has _loop_state => (
 sub _build_loop_state {
     my $self = shift;
 
-    my $start = $self->chunk_size * $self->min_multiplier;
+    my $start = $self->min_id;
 
     return {
         timer    => time,
         start    => $start,
         end      => $start + $self->chunk_size - 1,
         prev_end => $start - 1,
-        max_end  => ($self->process_past_max ? 2_000_000_000 : $self->chunk_size * $self->max_multiplier - 1),
+        max_end  => ($self->process_past_max ? 2_000_000_000 : $self->max_id),
 
         last_range       => {},
         multiplier_range => 0,
@@ -697,8 +695,7 @@ sub construct_and_execute {
 
 Given a L<DBIx::Class::ResultSetColumn>, L<DBIx::Class::ResultSet>, or L<DBI> statement
 handle set, this method calculates the min/max IDs of those objects.  It fills in the
-L</min_multiplier> and L</max_multiplier> attributes, based on the ID data, and then
-returns 1.
+L</min_id> and L</max_id> attributes, based on the ID data, and then returns 1.
 
 If either of the min/max statements don't return any ID data, this method will return 0.
 
@@ -742,11 +739,11 @@ sub calculate_ranges {
         $progress->increment;
     }
 
-    # Set the multipliers and return
+    # Set the ranges and return
     return 0 unless defined $min_id && $max_id;
 
-    $self->min_multiplier( int( $min_id / $self->chunk_size )     );
-    $self->max_multiplier( int( $max_id / $self->chunk_size ) + 1 );
+    $self->min_id( int $min_id );
+    $self->max_id( int $max_id );
 
     return 1;
 }
@@ -783,13 +780,13 @@ sub calculate_ranges {
 
     $batch_chunker->execute if $batch_chunker->calculate_ranges;
 
-Applies the configured DB changes in chunks.  Runs through a min/max multiplier loop,
-processing a statement handle, ResultSet, and/or coderef as it goes.  Each loop iteration
-processes a chunk of work, determined by L</chunk_size>.
+Applies the configured DB changes in chunks.  Runs through the loop, processing a
+statement handle, ResultSet, and/or coderef as it goes.  Each loop iteration processes a
+chunk of work, determined by L</chunk_size>.
 
-The L</calculate_ranges> method should be run first to fill in L</min_multiplier> and
-L</max_multiplier>.  If either of these are missing, the function will assume
-L</calculate_ranges> couldn't find them and warn about it.
+The L</calculate_ranges> method should be run first to fill in L</min_id> and L</max_id>.
+If either of these are missing, the function will assume L</calculate_ranges> couldn't
+find them and warn about it.
 
 More details can be found in the L</Processing Modes> and L</ATTRIBUTES> sections.
 
@@ -814,8 +811,12 @@ sub execute {
     }
 
     my $count;
-    if (defined $self->min_multiplier && defined $self->max_multiplier) {
-        $count = $self->max_multiplier - $self->min_multiplier + ($self->process_past_max ? 1 : 0);
+    if (defined $self->min_id && defined $self->max_id) {
+        $count =
+            $self->max_id - $self->min_id + 1 +
+            # Post-max processing may take more than one chunk, but we know it'll take at least one
+            ($self->process_past_max ? $self->chunk_size : 0)
+        ;
     }
 
     # Fire up the progress bar
@@ -843,7 +844,7 @@ sub execute {
     while ($ls->{prev_end} < $ls->{max_end} || $ls->{start}) {
         $ls->{multiplier_range} += $ls->{multiplier_step};
         $ls->{start}           //= $ls->{prev_end} + 1;        # this could be already set because of early 'next' calls
-        $ls->{end}               = $ls->{start} + $self->chunk_size * $ls->{multiplier_range} - 1;
+        $ls->{end}               = $ls->{start} + $ls->{multiplier_range} * $self->chunk_size - 1;
         $ls->{chunk_count}       = undef;
 
         if ($sth) {
@@ -911,7 +912,7 @@ sub execute {
         $self->_print_debug_status($progress => 'processed');
 
         # End-of-loop activities (skipped by early next)
-        $progress->increment( $ls->{multiplier_range} );
+        $progress->increment( $ls->{multiplier_range} * $self->chunk_size );
         $ls->{start}     = undef;
         $ls->{prev_end}  = $ls->{end};
         $ls->{timer}     = time;
@@ -947,7 +948,7 @@ sub _chunk_resize_checker {
     # Chunk sizing is essentially disabled, so run the max check and bounce
     if ($self->min_chunk_percent <= 0 || !defined $ls->{chunk_count}) {
         # There's no way to size this, so skip past the max as one block
-        $ls->{end} += 2_000_000_000 if $ls->{end} > $self->chunk_size * $self->max_multiplier && $self->process_past_max;
+        $ls->{end} = 2_000_000_000 if $ls->{end} > $self->max_id && $self->process_past_max;
 
         $ls->{prev_check} = 'disabled';
         return 1;
@@ -965,7 +966,7 @@ sub _chunk_resize_checker {
         # No rows: Skip the block entirely, and accelerate the stepping
         $self->_print_debug_status($progress => 'skipped');
 
-        $progress->increment( $ls->{multiplier_range} );
+        $progress->increment( $ls->{multiplier_range} * $self->chunk_size );
         $ls->{start}     = undef;
         $ls->{prev_end}  = $ls->{end};
         $ls->{timer}     = time;

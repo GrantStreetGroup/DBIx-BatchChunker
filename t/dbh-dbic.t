@@ -49,15 +49,19 @@ subtest 'DBIC Processing (+ process_past_max)' => sub {
 
     # Calculate
     ok($batch_chunker->calculate_ranges, 'calculate_ranges ok');
-    ok($batch_chunker->min_multiplier,   'min_multiplier ok');
-    ok($batch_chunker->max_multiplier,   'max_multiplier ok');
+    ok($batch_chunker->min_id,           'min_id ok');
+    ok($batch_chunker->max_id,           'max_id ok');
 
-    my $multiplier_range = $batch_chunker->max_multiplier - $batch_chunker->min_multiplier;
-    my $range = $multiplier_range * 3;
+    my $range = $batch_chunker->max_id - $batch_chunker->min_id + 1;
 
     # Process
     $batch_chunker->execute;
-    cmp_ok($calls, '==', ceil($range / 3) + 1, 'Right number of calls');
+
+    # NOTE: If the last remaining chunk is exactly the size of chunk_size, the
+    # process_past_max code will process one more chunk.  If that chunk is short,
+    # it'll use that chunk immediately to the PPM point.  Thus, the +1 here is
+    # before the division.
+    cmp_ok($calls, '==', ceil( ($range + 1) / 3), 'Right number of calls');
 };
 
 subtest 'DBIC Processing + single_rows (+ rsc)' => sub {
@@ -84,8 +88,8 @@ subtest 'DBIC Processing + single_rows (+ rsc)' => sub {
 
     # Calculate
     ok($batch_chunker->calculate_ranges, 'calculate_ranges ok');
-    ok($batch_chunker->min_multiplier,   'min_multiplier ok');
-    ok($batch_chunker->max_multiplier,   'max_multiplier ok');
+    ok($batch_chunker->min_id,           'min_id ok');
+    ok($batch_chunker->max_id,           'max_id ok');
 
     # Process
     $batch_chunker->execute;
@@ -114,17 +118,17 @@ subtest 'Active DBI Processing (+ sleep)' => sub {
 
     # Calculate
     ok($batch_chunker->calculate_ranges, 'calculate_ranges ok');
-    ok($batch_chunker->min_multiplier,   'min_multiplier ok');
-    ok($batch_chunker->max_multiplier,   'max_multiplier ok');
+    ok($batch_chunker->min_id,           'min_id ok');
+    ok($batch_chunker->max_id,           'max_id ok');
 
-    my $multiplier_range = $batch_chunker->max_multiplier - $batch_chunker->min_multiplier;
-    my $range = $multiplier_range * 3;
+    my $range = $batch_chunker->max_id - $batch_chunker->min_id + 1;
+    my $multiplier_range = ceil($range / 3);
 
     # Process
     my $start_time = time;
     $batch_chunker->execute;
     my $total_time = time - $start_time;
-    cmp_ok($calls,      '==', ceil($range / 3),        'Right number of calls');
+    cmp_ok($calls,      '==', $multiplier_range,       'Right number of calls');
     cmp_ok($total_time, '>=', $multiplier_range * 0.1, 'Slept ok');
     cmp_ok($total_time, '<',  $multiplier_range * 0.5, 'Did not oversleep');
 };
@@ -157,16 +161,16 @@ subtest 'Query DBI Processing (+ min_chunk_percent)' => sub {
 
     # Calculate
     ok($batch_chunker->calculate_ranges, 'calculate_ranges ok');
-    ok($batch_chunker->min_multiplier,   'min_multiplier ok');
-    ok($batch_chunker->max_multiplier,   'max_multiplier ok');
+    ok($batch_chunker->min_id,           'min_id ok');
+    ok($batch_chunker->max_id,           'max_id ok');
 
-    my $multiplier_range = $batch_chunker->max_multiplier - $batch_chunker->min_multiplier;
-    my $range = $multiplier_range * 3;
+    my $range = $batch_chunker->max_id - $batch_chunker->min_id + 1;
+    my $multiplier_range = ceil($range / 3);
 
     # Process
     $batch_chunker->execute;
-    cmp_ok($calls,      '<', ceil($range / 3), 'Fewer coderef calls than normal');
-    cmp_ok($max_range,  '>', 3,                'Expanded chunk at least once');
+    cmp_ok($calls,      '<', $multiplier_range, 'Fewer coderef calls than normal');
+    cmp_ok($max_range,  '>', 3,                 'Expanded chunk at least once');
 };
 
 subtest 'Query DBI Processing + single_row (+ rsc)' => sub {
@@ -202,8 +206,8 @@ subtest 'Query DBI Processing + single_row (+ rsc)' => sub {
 
     # Calculate
     ok($batch_chunker->calculate_ranges, 'calculate_ranges ok');
-    ok($batch_chunker->min_multiplier,   'min_multiplier ok');
-    ok($batch_chunker->max_multiplier,   'max_multiplier ok');
+    ok($batch_chunker->min_id,           'min_id ok');
+    ok($batch_chunker->max_id,           'max_id ok');
 
     # Process
     $batch_chunker->execute;
@@ -233,15 +237,14 @@ subtest 'DIY Processing (+ process_past_max)' => sub {
 
     # Calculate
     ok($batch_chunker->calculate_ranges, 'calculate_ranges ok');
-    ok($batch_chunker->min_multiplier,   'min_multiplier ok');
-    ok($batch_chunker->max_multiplier,   'max_multiplier ok');
+    ok($batch_chunker->min_id,           'min_id ok');
+    ok($batch_chunker->max_id,           'max_id ok');
 
-    my $multiplier_range = $batch_chunker->max_multiplier - $batch_chunker->min_multiplier;
-    my $range = $multiplier_range * 3;
+    my $range = $batch_chunker->max_id - $batch_chunker->min_id + 1;
 
     # Process
     $batch_chunker->execute;
-    cmp_ok($calls, '==', ceil($range / 3) + 1, 'Right number of calls');
+    cmp_ok($calls, '==', ceil( ($range + 1) / 3), 'Right number of calls');  # see PPM note on the first subtest
 };
 
 subtest 'process_past_max + min_chunk_percent' => sub {
@@ -274,21 +277,21 @@ subtest 'process_past_max + min_chunk_percent' => sub {
 
     # Calculate
     ok($batch_chunker->calculate_ranges, 'calculate_ranges ok');
-    ok($batch_chunker->min_multiplier,   'min_multiplier ok');
-    ok($batch_chunker->max_multiplier,   'max_multiplier ok');
+    ok($batch_chunker->min_id,           'min_id ok');
+    ok($batch_chunker->max_id,           'max_id ok');
 
-    my $multiplier_range = $batch_chunker->max_multiplier - $batch_chunker->min_multiplier;
-    my $range       = $multiplier_range * $CHUNK_SIZE;
-    my $real_max_id = ($batch_chunker->max_multiplier + 1) * $CHUNK_SIZE - 1;
+    my $range       = $batch_chunker->max_id - $batch_chunker->min_id + 1;
+    my $real_max_id = $batch_chunker->max_id;
+    my $multiplier_range = ceil($range / $CHUNK_SIZE);
 
-    # Now, sabotage the max multiplier, so that process_past_max has to work through multiple chunks
-    $batch_chunker->max_multiplier(
-        int($multiplier_range / 2) + $batch_chunker->min_multiplier
+    # Now, sabotage the max_id, so that process_past_max has to work through multiple chunks
+    $batch_chunker->max_id(
+        int($range / 2) + $batch_chunker->min_id
     );
 
     # Process
     $batch_chunker->execute;
-    cmp_ok($calls,      '<',  ceil($range / $CHUNK_SIZE), 'Fewer coderef calls than normal');
+    cmp_ok($calls,      '<',  $multiplier_range,          'Fewer coderef calls than normal');
     cmp_ok($calls,      '>=', ceil($track1_count / 5),    'More coderef calls than minimum threshold');
     cmp_ok($max_count,  '<=', 5,                          'Did not exceed max chunk percentage');
     cmp_ok($max_id,     '>=', $real_max_id,               'Looked at all of the IDs');
