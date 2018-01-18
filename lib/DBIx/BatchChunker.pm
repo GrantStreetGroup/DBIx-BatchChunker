@@ -21,6 +21,10 @@ use namespace::clean;  # don't export the above
 
 DBIx::BatchChunker - Run large database changes safely
 
+=head1 VERSION
+
+version 0.90
+
 =head1 SYNOPSIS
 
     use DBIx::BatchChunker;
@@ -59,7 +63,7 @@ DBIx::BatchChunker - Run large database changes safely
 
 This utility class is for running a large batch of DB changes in a manner that doesn't
 cause huge locks, outages, and missed transactions.  It's highly flexible to allow for
-many different kinds of schema change operations.
+many different kinds of change operations.
 
 It works by splitting up DB operations into smaller chunks within a loop.  These chunks
 are transactionalized, either naturally as single-operation bulk work or by the loop
@@ -116,17 +120,18 @@ The C<BETWEEN> clause should, of course, match the IDs being used in the loop.
 =head3 Query DBI Processing
 
 If both a L</sth> and a L</coderef> are passed, the statement handle is executed.  Like
-they L</Active DBI Processing> mode, the SQL for the statement handle should contain
+the L</Active DBI Processing> mode, the SQL for the statement handle should contain
 exactly two placeholders for a C<BETWEEN> clause.  Then the C<$sth> is passed to the
-coderef.  It's up to the coderef to extract data from the executed statement handle.
+coderef.  It's up to the coderef to extract data from the executed statement handle, and
+do something with it.
 
 If C<single_rows> is enabled, each chunk is wrapped in a transaction and the coderef is
-called for each row in the chunk.  In this case the coderef is passed a hashref of the
+called for each row in the chunk.  In this case, the coderef is passed a hashref of the
 row instead of the executed C<$sth>, with lowercase alias names used as keys.
 
 =head3 DIY Processing
 
-If a L</coderef> is passed but neither a C</sth> nor a C</rs> are passed, then the
+If a L</coderef> is passed but neither a C<sth> nor a C<rs> are passed, then the
 multiplier loop does not touch the database.  The coderef is merely passed the start and
 end IDs for each chunk.  It is expected that the coderef will run through all database
 operations using those start and end points.
@@ -369,7 +374,7 @@ L</calculate_ranges> and L</execute>, since everything is calculated based on mu
 of this size.
 
 Default is 1000 rows.  This figure should be sized to keep per-chunk processing time
-at around 10 seconds.  If this is too large, tables may lock for too long.  If it's too
+at around 10 seconds.  If this is too large, rows may lock for too long.  If it's too
 small, processing may be unnecessarily slow.
 
 =cut
@@ -487,8 +492,8 @@ Used by L</execute> to figure out the main start and end points.  Calculated by
 L</calculate_ranges>.
 
 Manually setting this is not recommended, as each database is different and the
-information may have changed between the schema change development and deployment.
-Instead, use L</calculate_ranges> to fill in these values right before running the loop.
+information may have changed between the DB change development and deployment.  Instead,
+use L</calculate_ranges> to fill in these values right before running the loop.
 
 =cut
 
@@ -1070,5 +1075,32 @@ sub _print_debug_status {
 
     return $progress->message($message);
 }
+
+=head1 BUGS
+
+This module assumes you don't have any tables with IDs beyond 2 billion.  This detail
+is especially apparent in the L</process_past_max> code.  The reason for this is to
+avoid issues with significand bits limits, but this might be better solved with
+L<Data::Float/max_integer>.
+
+=head1 SEE ALSO
+
+L<DBIx::BulkLoader::Mysql>, L<DBIx::Class::BatchUpdate>, L<DBIx::BulkUtil>
+
+=head1 AUTHOR
+
+Grant Street Group <developers@grantstreet.com>
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright 2018 Grant Street Group
+
+This program is free software; you can redistribute it and/or modify it
+under the terms of the the Artistic License (2.0). You may obtain a
+copy of the full license at:
+
+L<http://www.perlfoundation.org/artistic_license_2_0>
+
+=cut
 
 1;
