@@ -8,6 +8,7 @@ use Types::Standard        qw( Str Num Bool HashRef CodeRef InstanceOf HasMethod
 use Types::Common::Numeric qw( PositiveInt PositiveOrZeroInt PositiveOrZeroNum );
 use Type::Utils;
 
+use List::Util   qw( min max sum any );
 use Scalar::Util qw( blessed weaken );
 use Sub::Name;
 use Term::ProgressBar::Simple;
@@ -34,9 +35,11 @@ version 0.90
     });
 
     my %params = (
-        chunk_size => 5000,
-        rs         => $account_rs,
-        id_name    => 'account_id',
+        chunk_size  => 5000,
+        target_time => 15,
+
+        rs      => $account_rs,
+        id_name => 'account_id',
 
         coderef => sub { $_[1]->delete },
         sleep   => 1,
@@ -63,7 +66,8 @@ version 0.90
 
 This utility class is for running a large batch of DB changes in a manner that doesn't
 cause huge locks, outages, and missed transactions.  It's highly flexible to allow for
-many different kinds of change operations.
+many different kinds of change operations, and dynamically adjusts chunks to its
+workload.
 
 It works by splitting up DB operations into smaller chunks within a loop.  These chunks
 are transactionalized, either naturally as single-operation bulk work or by the loop
@@ -384,6 +388,28 @@ has chunk_size => (
     default  => sub { 1000 },
 );
 
+=head3 target_time
+
+The target runtime (in seconds) that chunk processing should strive to achieve, not
+including L</sleep>.  If the chunk processing times are too high or too low, this will
+dynamically adjust L</chunk_size> to try to match the target.
+
+B<Turning this on does not mean you should ignore C<chunk_size>!>  If the starting chunk
+size is grossly inaccurate to the workload, you could end up with several chunks in the
+beginning causing long-lasting locks before the runtime targeting reduces them down to a
+reasonable size.
+
+Default is 0, which turns off runtime targeting.
+
+=cut
+
+has target_time => (
+    is       => 'ro',
+    isa      => PositiveOrZeroNum,
+    required => 0,
+    default  => sub { 0 },
+);
+
 =head3 sleep
 
 The number of seconds to sleep after each chunk.  It uses L<Time::HiRes>'s version, so
@@ -543,6 +569,11 @@ The maximum ending ID.  This will be 2 billion if L</process_past_max> is set.
 A hashref of keys used for the bisecting of one block.  Cleared out after a block has
 been processed or skipped.
 
+=item last_timings
+
+An arrayref of hashrefs, containing data for the previous 5 runs.  This data is used for
+runtime targeting.
+
 =item multiplier_range
 
 The range (in units of L</chunk_size>) between the start and end IDs.  This starts at 1
@@ -560,6 +591,10 @@ checks are hitting.  Resets after block processing.
 A check counter to make sure the chunk resizing isn't taking too long.  After ten checks,
 it will give up, assuming the block is safe to process.
 
+=item chunk_size
+
+The I<current> chunk size, which might be adjusted by runtime targeting.
+
 =item chunk_count
 
 Records the results of the C<COUNT(*)> query for chunk resizing.
@@ -568,6 +603,11 @@ Records the results of the C<COUNT(*)> query for chunk resizing.
 
 A short string recording what happened during the last chunk resizing check.  Exists
 purely for debugging purposes.
+
+=item prev_runtime
+
+The number of seconds the previously processed chunk took to run, not including sleep
+time.
 
 =back
 
@@ -596,11 +636,14 @@ sub _build_loop_state {
         max_end  => ($self->process_past_max ? 2_000_000_000 : $self->max_id),
 
         last_range       => {},
+        last_timings     => [],
         multiplier_range => 0,
         multiplier_step  => 1,
         checked_count    => 0,
+        chunk_size       => $self->chunk_size,
         chunk_count      => undef,
         prev_check       => '',
+        prev_runtime     => undef,
     };
 }
 
@@ -770,6 +813,7 @@ sub calculate_ranges {
         process_past_max  => 1,    # use this if processing the whole table
         single_rows       => 1,    # does $coderef get a single $row or the whole $chunk_rs / $sth
         min_chunk_percent => 0.25, # minimum row count of chunk size percentage; defaults to 0.5 (or 50%)
+        target_time       => 15,   # target runtime for dynamic chunk size scaling; default is off
 
         progress_name => 'Updating Accounts',  # easier than creating your own progress_bar
 
@@ -844,7 +888,7 @@ sub execute {
     while ($ls->{prev_end} < $ls->{max_end} || $ls->{start}) {
         $ls->{multiplier_range} += $ls->{multiplier_step};
         $ls->{start}           //= $ls->{prev_end} + 1;        # this could be already set because of early 'next' calls
-        $ls->{end}               = $ls->{start} + $ls->{multiplier_range} * $self->chunk_size - 1;
+        $ls->{end}               = $ls->{start} + $ls->{multiplier_range} * $ls->{chunk_size} - 1;
         $ls->{chunk_count}       = undef;
 
         if ($sth) {
@@ -856,7 +900,7 @@ sub execute {
                 ($ls->{chunk_count}) = $count_sth->fetchrow_array;
             }
 
-            next unless $self->_chunk_resize_checker($progress);
+            next unless $self->_chunk_count_checker($progress);
 
             # Execute the DQL/DML statement handle
             $sth->execute(@$ls{qw< start end >});
@@ -886,7 +930,7 @@ sub execute {
 
             # Figure out if the row count is worth the work
             $ls->{chunk_count} = $chunk_rs->count;
-            next unless $self->_chunk_resize_checker($progress);
+            next unless $self->_chunk_count_checker($progress);
 
             if ($self->single_rows) {
                 # Transactional work
@@ -902,14 +946,18 @@ sub execute {
         else {
             ### Something a bit more free-form
 
-            $self->_chunk_resize_checker($progress);  # mostly for the max end check
+            $self->_chunk_count_checker($progress);  # mostly for the max end check
             $self->$coderef(@$ls{qw< start end >});
         }
+
+        # Record the time quickly
+        $ls->{prev_runtime} = time - $ls->{timer};
 
         # Give the DB a little bit of breathing room
         sleep $self->sleep if $self->sleep;
 
         $self->_print_debug_status($progress => 'processed');
+        $self->_runtime_checker($progress);
 
         # End-of-loop activities (skipped by early next)
         $progress->increment( $ls->{multiplier_range} * $self->chunk_size );
@@ -933,15 +981,18 @@ sub execute {
 
 =head1 PRIVATE METHODS
 
-=head2 _chunk_resize_checker
+=head2 _chunk_count_checker
 
 Checks the chunk count to make sure it's properly sized.  If not, it will try to shrink
-or expand the chunk as necessary.  Its return value determines whether the block should
-be processed or not.
+or expand the current chunk (in C<chunk_size> increments) as necessary.  Its return value
+determines whether the block should be processed or not.
+
+This is not to be confused with the L</_runtime_checker>, which adjusts C<chunk_size>
+after processing, based on previous run times.
 
 =cut
 
-sub _chunk_resize_checker {
+sub _chunk_count_checker {
     my ($self, $progress) = @_;
     my $ls = $self->_loop_state;
 
@@ -959,7 +1010,7 @@ sub _chunk_resize_checker {
     ### refcount>1, it tries to call its '=' copy constructor and fails because T:PB:S
     ### doesn't have a '=' overload.  So, we sidestep it by using direct increment calls.
 
-    my $chunk_percent = $ls->{chunk_count} / $self->chunk_size;
+    my $chunk_percent = $ls->{chunk_count} / $ls->{chunk_size};
     $ls->{checked_count}++;
 
     if    ($ls->{chunk_count} == 0 && $self->min_chunk_percent > 0) {
@@ -1033,6 +1084,88 @@ sub _chunk_resize_checker {
     return 1;
 }
 
+=head2 _runtime_checker
+
+Stores the previously processed chunk's runtime, and then adjusts C<chunk_size> as
+necessary.
+
+=cut
+
+sub _runtime_checker {
+    my ($self, $progress) = @_;
+    my $ls = $self->_loop_state;
+    return unless $self->target_time;
+
+    my $timings = $ls->{last_timings};
+
+    my $new_timing = {
+        runtime     => $ls->{prev_runtime},
+        chunk_count => $ls->{chunk_count} || $ls->{chunk_size},
+    };
+    $new_timing->{chunk_per} = $new_timing->{chunk_count} / $ls->{chunk_size};
+
+    # Rowtime: a measure of how much of the chunk_size actually impacted the runtime
+    $new_timing->{rowtime} = $new_timing->{runtime} / $new_timing->{chunk_per};
+
+    # Store the last five processing times
+    push @$timings, $new_timing;
+    shift @$timings if @$timings > 5;
+
+    # Figure out the averages and adjustment factor
+    my $ttl = scalar @$timings;
+    my $avg_rowtime   = sum(map { $_->{rowtime} } @$timings) / $ttl;
+    my $adjust_factor = $self->target_time / $avg_rowtime;
+
+    my $new_target_chunk_size = $ls->{chunk_size};
+    my $adjective;
+    if    ($adjust_factor > 1.05) {
+        # Too fast: Raise the chunk size
+
+        return unless $ttl >= 5;                                          # must have a full set of timings
+        return if any { $_->{runtime} >= $self->target_time } @$timings;  # must ALL have low runtimes
+
+        $new_target_chunk_size *= min(2, $adjust_factor);  # never more than double
+        $adjective = 'fast';
+    }
+    elsif ($adjust_factor < 0.95) {
+        # Too slow: Lower the chunk size
+
+        return unless $ls->{prev_runtime} > $self->target_time;  # last runtime must actually be too high
+
+        $new_target_chunk_size *=
+            ($ls->{prev_runtime} < $self->target_time * 3) ?
+            max(0.5, $adjust_factor) :  # never less than half...
+            $adjust_factor              # ...unless the last runtime was waaaay off
+        ;
+        $new_target_chunk_size = 1 if $new_target_chunk_size < 1;
+        $adjective = 'slow';
+    }
+
+    $new_target_chunk_size = int $new_target_chunk_size;
+    return if $new_target_chunk_size == $ls->{chunk_size};  # either nothing changed or it's too miniscule
+    return if $new_target_chunk_size < 1;
+
+    # Print out a debug line, if enabled
+    if ($self->debug) {
+        # CLDR number formatters
+        my $integer = $self->cldr->decimal_formatter;
+        my $percent = $self->cldr->percent_formatter;
+
+        $progress->message( sprintf(
+            "Processing too %s, avg %4s of target time, adjusting chunk size from %s to %s",
+            $adjective,
+            $percent->format( 1 / $adjust_factor ),
+            $integer->format( $ls->{chunk_size} ),
+            $integer->format( $new_target_chunk_size ),
+        ) );
+    }
+
+    # Change it!
+    $ls->{chunk_size} = $new_target_chunk_size;
+    $ls->{last_timings} = [] if $adjective eq 'fast';  # never snowball too quickly
+    return 1;
+}
+
 =head2 _print_debug_status
 
 Prints out a standard debug status line, if debug is enabled.  What it prints is
@@ -1044,9 +1177,9 @@ pulled from L</_loop_state>.
 sub _print_debug_status {
     my ($self, $progress, $action) = @_;
     return unless $self->debug;
-    my $end_time = time;  # catch it early
 
-    my $ls = $self->_loop_state;
+    my $ls    = $self->_loop_state;
+    my $sleep = $self->sleep || 0;
 
     # CLDR number formatters
     my $integer = $self->cldr->decimal_formatter;
@@ -1064,15 +1197,22 @@ sub _print_debug_status {
 
     $message .= sprintf(
         ' (%4s of chunk size)',
-        $percent->format( $ls->{chunk_count} / $self->chunk_size ),
+        $percent->format( $ls->{chunk_count} / $ls->{chunk_size} ),
     ) if $ls->{chunk_count};
 
-    my $sleep = $self->sleep || 0;
-    $message .= sprintf(
-        ', %5s+%s sec runtime+sleep',
-        $decimal->format( $end_time - $ls->{timer} - $sleep ),
-        $decimal->format( $sleep )
-    ) if $action eq 'processed';
+    if ($action eq 'processed') {
+        $message .= $sleep ?
+            sprintf(
+                ', %5s+%s sec runtime+sleep',
+                $decimal->format( $ls->{prev_runtime} ),
+                $decimal->format( $sleep )
+            ) :
+            sprintf(
+                ', %5s sec runtime',
+                $decimal->format( $ls->{prev_runtime} ),
+            )
+        ;
+    }
 
     return $progress->message($message);
 }

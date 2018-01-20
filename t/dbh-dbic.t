@@ -11,7 +11,7 @@ use Test2::Tools::Explain;
 
 use POSIX        qw( ceil );
 use Scalar::Util qw( looks_like_number );
-use Time::HiRes  qw( time );
+use Time::HiRes  qw( time sleep );
 use Env          qw( BATCHCHUNK_TEST_DEBUG );
 
 use DBIx::BatchChunker;
@@ -308,8 +308,6 @@ subtest 'process_past_max + min_chunk_percent' => sub {
     cmp_ok($max_id,     '>=', $real_max_id,      'Looked at all of the IDs');
 };
 
-# Verify that the automatic constructor correctly constructs the object,
-# calculates the ranges, and executes
 subtest 'Automatic execution (DBIC Processing + single_rows + rsc)' => sub {
     my $calls = 0;
 
@@ -331,6 +329,90 @@ subtest 'Automatic execution (DBIC Processing + single_rows + rsc)' => sub {
 
     isa_ok($batch_chunker, ['DBIx::BatchChunker'], '$bc');
     cmp_ok($calls, '==', $track1_count, 'Right number of calls');
+};
+
+# An in-memory SQLite DB is going to be far too fast for any sort of CRUD access, so
+# we'd can freely control it with sleep.
+
+subtest 'Runtime targeting (too fast)' => sub {
+    my $calls    = 0;
+    my $max_size = $CHUNK_SIZE;
+    my $max_time = 0;
+    my $chunk_size_changes = 0;
+
+    my $batch_chunker = DBIx::BatchChunker->construct_and_execute(
+        chunk_size  => $CHUNK_SIZE,
+        target_time => 0.5,
+
+        rs          => $track_rs,
+        coderef     => sub {
+            my ($bc, $rs) = @_;
+            isa_ok($rs, ['DBIx::Class::ResultSet'], '$rs');
+            $calls++;
+            sleep 0.05;
+
+            my $ls = $bc->_loop_state;
+            if ($ls->{chunk_size} > $max_size) {
+                $max_size = $ls->{chunk_size};
+                $chunk_size_changes++;
+            }
+            $max_time = $ls->{prev_runtime} if $ls->{prev_runtime} && $ls->{prev_runtime} > $max_time;
+
+            note explain $ls if $BATCHCHUNK_TEST_DEBUG;
+        },
+
+        min_chunk_percent => 0,
+    );
+
+    my $range = $batch_chunker->max_id - $batch_chunker->min_id + 1;
+    my $multiplier_range = ceil($range / $CHUNK_SIZE);
+    my $right_changes    = ceil($calls / 5) - 1;
+    my $right_size       = $CHUNK_SIZE * 2 ** $right_changes;
+
+    cmp_ok($calls,              '<',  $multiplier_range, 'Fewer coderef calls than normal');
+    cmp_ok($max_time,           '<',  0.5,               'Never exceeded target time');
+    cmp_ok($max_size,           '==', $right_size,       'Right chunk size');
+    cmp_ok($chunk_size_changes, '==', $right_changes,    'Right number of chunk size changes');
+};
+
+subtest 'Runtime targeting (too slow)' => sub {
+    my $calls    = 0;
+    my $min_size = $CHUNK_SIZE;
+    my $min_time = 999;
+    my $chunk_size_changes = 0;
+
+    my $batch_chunker = DBIx::BatchChunker->construct_and_execute(
+        chunk_size  => $CHUNK_SIZE,
+        target_time => 0.05,
+
+        rs          => $track_rs,
+        coderef     => sub {
+            my ($bc, $rs) = @_;
+            isa_ok($rs, ['DBIx::Class::ResultSet'], '$rs');
+            $calls++;
+            sleep 0.25;
+
+            my $ls = $bc->_loop_state;
+            if ($ls->{chunk_size} < $min_size) {
+                $min_size = $ls->{chunk_size};
+                $chunk_size_changes++;
+            }
+            $min_time = $ls->{prev_runtime} if $ls->{prev_runtime} && $ls->{prev_runtime} < $min_time;
+
+            note explain $ls if $BATCHCHUNK_TEST_DEBUG;
+        },
+
+        min_chunk_percent => 0,
+    );
+
+    my $range = $batch_chunker->max_id - $batch_chunker->min_id + 1;
+    my $multiplier_range = ceil($range / $CHUNK_SIZE);
+    my $right_calls      = $range - $CHUNK_SIZE + 1;
+
+    cmp_ok($calls,    '>',  $multiplier_range, 'Greater coderef calls than normal');
+    cmp_ok($calls,    '==', $right_calls,      'Right coderef calls');
+    cmp_ok($min_time, '>',  0.05,              'Always exceeded target time');
+    cmp_ok($min_size, '==', 1,                 'Right chunk size');
 };
 
 subtest 'Errors' => sub {
