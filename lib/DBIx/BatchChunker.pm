@@ -8,6 +8,7 @@ use Types::Standard        qw( Str Num Bool HashRef CodeRef InstanceOf );
 use Types::Common::Numeric qw( PositiveInt PositiveOrZeroInt PositiveOrZeroNum );
 use Type::Utils;
 
+use Data::Float;
 use List::Util        1.33 (qw( min max sum any ));  # has any/all/etc.
 use POSIX                   qw( ceil );
 use Scalar::Util            qw( blessed weaken );
@@ -16,6 +17,8 @@ use Term::ProgressBar 2.14;                          # with silent option
 use Time::HiRes             qw( time sleep );
 
 use namespace::clean;  # don't export the above
+
+our $DB_MAX_ID = Data::Float::max_integer;  # used for progress_past_max
 
 =encoding utf8
 
@@ -435,12 +438,19 @@ has 'sleep' => (
 
 =head3 process_past_max
 
-Boolean that controls whether the last chunk will be C<< $max_id to 2_000_000_000 >> or
-if it will just end at C<$max_id>.  This is useful if the entire table is expected to
-be processed, and you don't want to miss any new rows that come up between
-L</calculate_ranges> and the end of the loop.
+Boolean that controls whether to check past the L</max_id> during the loop.  If the loop
+hits the end point, it will run another maximum ID check in the DB, and adjust C<max_id>
+accordingly.  If it somehow cannot run a DB check (no L</rs> or L</max_sth> available,
+for example), the last chunk will check all the way to C<$DB_MAX_ID>.
+
+This is useful if the entire table is expected to be processed, and you don't want to
+miss any new rows that come up between L</calculate_ranges> and the end of the loop.
 
 Turned off by default.
+
+B<NOTE:> If your RDBMS has a problem with a number as high as whatever L<max_integer|Data::Float/max_integer>
+reports, you may want to set the C<$DB_MAX_ID> global variable in this module to
+something lower.
 
 =cut
 
@@ -563,7 +573,7 @@ calculations and to determine if the end of the loop has been reached.
 
 =item max_end
 
-The maximum ending ID.  This will be 2 billion if L</process_past_max> is set.
+The maximum ending ID.  This will be C<$DB_MAX_ID> if L</process_past_max> is set.
 
 =item last_range
 
@@ -639,7 +649,7 @@ sub _build_loop_state {
         start    => $start,
         end      => $start + $self->chunk_size - 1,
         prev_end => $start - 1,
-        max_end  => ($self->process_past_max ? 2_000_000_000 : $self->max_id),
+        max_end  => ($self->process_past_max ? $DB_MAX_ID : $self->max_id),
 
         last_range       => {},
         last_timings     => [],
@@ -901,6 +911,8 @@ sub execute {
         $ls->{end}               = $ls->{start} + $ls->{multiplier_range} * $ls->{chunk_size} - 1;
         $ls->{chunk_count}       = undef;
 
+        next unless $self->_process_past_max_checker;
+
         if ($sth) {
             ### DML statement handle
 
@@ -956,7 +968,7 @@ sub execute {
         else {
             ### Something a bit more free-form
 
-            $self->_chunk_count_checker;  # mostly for the max end check
+            next unless $self->_chunk_count_checker;
             $self->$coderef(@$ls{qw< start end >});
         }
 
@@ -991,11 +1003,79 @@ sub execute {
 
 =head1 PRIVATE METHODS
 
+=head2 _process_past_max_checker
+
+Checks to make sure the current endpoint is actually the end, by checking the database.
+Its return value determines whether the block should be processed or not.
+
+See L</process_past_max>.
+
+=cut
+
+sub _process_past_max_checker {
+    my ($self) = @_;
+    my $ls = $self->_loop_state;
+    my $progress = $ls->{progress_bar};
+
+    return 1 unless $self->process_past_max;
+    return 1 unless $ls->{end} > $self->max_id;
+
+    # No checks for DIY, of course
+    unless ($self->rsc || $self->max_sth) {
+        # There's no way to size this, so skip past the max as one block
+        $ls->{end} = $ls->{max_end};
+        return 1;
+    }
+
+    # Run another MAX check
+    $progress->message('Reached end; re-checking max ID') if $self->debug;
+    my $new_max_id;
+    if (my $rsc = $self->rsc) {
+        $new_max_id = $rsc->max;
+    }
+    else {
+        my $max_sth = $self->max_sth;
+        $max_sth->execute;
+        ($new_max_id) = $max_sth->fetchrow_array;
+    }
+    $ls->{timer} = time;  # the above query shouldn't impact runtimes
+
+    if (!$new_max_id || $new_max_id eq '0E0') {
+        # No max: No affected rows to change
+        $progress->message('No max ID found; nothing left to process...') if $self->debug;
+        $ls->{end} = $ls->{max_end};
+
+        $ls->{prev_check} = 'no max';
+        return 0;
+    }
+    elsif ($new_max_id > $self->max_id) {
+        # New max ID
+        $progress->message( sprintf 'New max ID set from %u to %u', $self->max_id, $new_max_id ) if $self->debug;
+        $self->max_id($new_max_id);
+        $progress->target( $new_max_id - $self->min_id + 1 );
+        $progress->update( $progress->last_update );
+    }
+    elsif ($new_max_id == $self->max_id) {
+        # Same max ID
+        $progress->message( sprintf 'Found max ID %u; same as end', $new_max_id ) if $self->debug;
+        $ls->{max_end} = $new_max_id;
+    }
+    else {
+        # Max too low
+        $progress->message( sprintf 'Found max ID %u; ignoring...', $new_max_id ) if $self->debug;
+        $ls->{max_end} = $self->max_id;
+    }
+
+    return 1;
+}
+
 =head2 _chunk_count_checker
 
 Checks the chunk count to make sure it's properly sized.  If not, it will try to shrink
 or expand the current chunk (in C<chunk_size> increments) as necessary.  Its return value
 determines whether the block should be processed or not.
+
+See L</min_chunk_percent>.
 
 This is not to be confused with the L</_runtime_checker>, which adjusts C<chunk_size>
 after processing, based on previous run times.
@@ -1007,11 +1087,8 @@ sub _chunk_count_checker {
     my $ls = $self->_loop_state;
     my $progress = $ls->{progress_bar};
 
-    # Chunk sizing is essentially disabled, so run the max check and bounce
+    # Chunk sizing is essentially disabled, so bounce out of here
     if ($self->min_chunk_percent <= 0 || !defined $ls->{chunk_count}) {
-        # There's no way to size this, so skip past the max as one block
-        $ls->{end} = 2_000_000_000 if $ls->{end} > $self->max_id && $self->process_past_max;
-
         $ls->{prev_check} = 'disabled';
         return 1;
     }
@@ -1094,6 +1171,8 @@ sub _chunk_count_checker {
 
 Stores the previously processed chunk's runtime, and then adjusts C<chunk_size> as
 necessary.
+
+See L</target_time>.
 
 =cut
 
@@ -1238,13 +1317,6 @@ sub _print_debug_status {
 
     return $ls->{progress_bar}->message($message);
 }
-
-=head1 BUGS
-
-This module assumes you don't have any tables with IDs beyond 2 billion.  This detail
-is especially apparent in the L</process_past_max> code.  The reason for this is to
-avoid issues with significand bits limits, but this might be better solved with
-L<Data::Float/max_integer>.
 
 =head1 SEE ALSO
 
