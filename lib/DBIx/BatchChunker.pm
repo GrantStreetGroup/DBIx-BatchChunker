@@ -4,15 +4,16 @@ use Moo;
 
 use CLDR::Number;
 
-use Types::Standard        qw( Str Num Bool HashRef CodeRef InstanceOf HasMethods );
+use Types::Standard        qw( Str Num Bool HashRef CodeRef InstanceOf );
 use Types::Common::Numeric qw( PositiveInt PositiveOrZeroInt PositiveOrZeroNum );
 use Type::Utils;
 
-use List::Util   qw( min max sum any );
-use Scalar::Util qw( blessed weaken );
+use List::Util        1.33 (qw( min max sum any ));  # has any/all/etc.
+use POSIX                   qw( ceil );
+use Scalar::Util            qw( blessed weaken );
 use Sub::Name;
-use Term::ProgressBar::Simple;
-use Time::HiRes qw( time sleep );
+use Term::ProgressBar 2.14;                          # with silent option
+use Time::HiRes             qw( time sleep );
 
 use namespace::clean;  # don't export the above
 
@@ -261,14 +262,14 @@ different one for another method:
     $batch_chunker->execute;
 
 All of this is optional.  If the progress bar isn't specified, the method will create
-a default one.  If the terminal isn't interactive, L<Term::ProgressBar::Simple> will
-naturally skip the output.
+a default one.  If the terminal isn't interactive, the default L<Term::ProgressBar> will
+be set to C<silent> to naturally skip the output.
 
 =cut
 
 has progress_bar => (
     is       => 'rw',
-    isa      => HasMethods([qw< update message >]),
+    isa      => InstanceOf['Term::ProgressBar'],
 );
 
 =head3 progress_name
@@ -609,6 +610,11 @@ purely for debugging purposes.
 The number of seconds the previously processed chunk took to run, not including sleep
 time.
 
+=item progress_bar
+
+The progress bar being used in the loop.  This may be different than L</progress_bar>,
+since it could be auto-generated.
+
 =back
 
 =cut
@@ -644,6 +650,8 @@ sub _build_loop_state {
         chunk_count      => undef,
         prev_check       => '',
         prev_runtime     => undef,
+
+        progress_bar     => undef,
     };
 }
 
@@ -758,28 +766,30 @@ sub calculate_ranges {
     my $column_name = $self->id_name // '';
     $column_name =~ s/^\w+\.//;
 
-    my $progress = $self->progress_bar // Term::ProgressBar::Simple->new({
-        name  => 'Calculating ranges'.($column_name ? " for $column_name" : ''),
-        count => 2,
+    my $progress = $self->progress_bar // Term::ProgressBar->new({
+        name   => 'Calculating ranges'.($column_name ? " for $column_name" : ''),
+        count  => 2,
+        ETA    => 'linear',
+        silent => !(-t *STDERR && -t *STDIN),  # STDERR is what {fh} is set to use
     });
 
     # Actually run the statements
     my ($min_id, $max_id);
     if (my $rsc = $self->rsc) {
         $min_id = $rsc->min;
-        $progress->increment;
+        $progress->update(1);
         $max_id = $rsc->max;
-        $progress->increment;
+        $progress->update(2);
     }
     else {
         my ($min_sth, $max_sth) = ($self->min_sth, $self->max_sth);
         $min_sth->execute;
         ($min_id) = $min_sth->fetchrow_array;
-        $progress->increment;
+        $progress->update(1);
 
         $max_sth->execute;
         ($max_id) = $max_sth->fetchrow_array;
-        $progress->increment;
+        $progress->update(2);
     }
 
     # Set the ranges and return
@@ -856,17 +866,15 @@ sub execute {
 
     my $count;
     if (defined $self->min_id && defined $self->max_id) {
-        $count =
-            $self->max_id - $self->min_id + 1 +
-            # Post-max processing may take more than one chunk, but we know it'll take at least one
-            ($self->process_past_max ? $self->chunk_size : 0)
-        ;
+        $count = $self->max_id - $self->min_id + 1;
     }
 
     # Fire up the progress bar
-    my $progress = $self->progress_bar // Term::ProgressBar::Simple->new({
-        name  => $self->progress_name,
-        count => $count // 1,
+    my $progress = $self->progress_bar // Term::ProgressBar->new({
+        name   => $self->progress_name,
+        count  => $count // 1,
+        ETA    => 'linear',
+        silent => !(-t *STDERR && -t *STDIN),  # STDERR is what {fh} is set to use
     });
 
     unless ($count) {
@@ -876,13 +884,15 @@ sub execute {
 
     if ($self->debug) {
         $progress->message(
-            sprintf "(%s total chunks; %s total rows)", map { $self->cldr->decimal_formatter->format($_) } ($count, $count * $self->chunk_size)
+            sprintf "(%s total chunks; %s total rows)",
+                map { $self->cldr->decimal_formatter->format($_) } ( ceil($count / $self->chunk_size), $count)
         );
     }
 
     # Loop state setup
     $self->_clear_loop_state;
     my $ls = $self->_loop_state;
+    $ls->{progress_bar} = $progress;
 
     # Da loop
     while ($ls->{prev_end} < $ls->{max_end} || $ls->{start}) {
@@ -900,7 +910,7 @@ sub execute {
                 ($ls->{chunk_count}) = $count_sth->fetchrow_array;
             }
 
-            next unless $self->_chunk_count_checker($progress);
+            next unless $self->_chunk_count_checker;
 
             # Execute the DQL/DML statement handle
             $sth->execute(@$ls{qw< start end >});
@@ -930,7 +940,7 @@ sub execute {
 
             # Figure out if the row count is worth the work
             $ls->{chunk_count} = $chunk_rs->count;
-            next unless $self->_chunk_count_checker($progress);
+            next unless $self->_chunk_count_checker;
 
             if ($self->single_rows) {
                 # Transactional work
@@ -946,7 +956,7 @@ sub execute {
         else {
             ### Something a bit more free-form
 
-            $self->_chunk_count_checker($progress);  # mostly for the max end check
+            $self->_chunk_count_checker;  # mostly for the max end check
             $self->$coderef(@$ls{qw< start end >});
         }
 
@@ -956,11 +966,11 @@ sub execute {
         # Give the DB a little bit of breathing room
         sleep $self->sleep if $self->sleep;
 
-        $self->_print_debug_status($progress => 'processed');
-        $self->_runtime_checker($progress);
+        $self->_print_debug_status('processed');
+        $self->_increment_progress;
+        $self->_runtime_checker;
 
         # End-of-loop activities (skipped by early next)
-        $progress->increment( $ls->{multiplier_range} * $self->chunk_size );
         $ls->{start}     = undef;
         $ls->{prev_end}  = $ls->{end};
         $ls->{timer}     = time;
@@ -973,8 +983,8 @@ sub execute {
     $self->_clear_loop_state;
 
     # Keep the finished time from the progress bar, in case there are other loops or output
-    unless (blessed($progress) =~ /Test::MockObject/) {
-        $progress = undef;
+    unless ($progress->silent) {
+        $progress->update( $progress->target );
         print "\n";
     }
 }
@@ -993,8 +1003,9 @@ after processing, based on previous run times.
 =cut
 
 sub _chunk_count_checker {
-    my ($self, $progress) = @_;
+    my ($self) = @_;
     my $ls = $self->_loop_state;
+    my $progress = $ls->{progress_bar};
 
     # Chunk sizing is essentially disabled, so run the max check and bounce
     if ($self->min_chunk_percent <= 0 || !defined $ls->{chunk_count}) {
@@ -1005,19 +1016,14 @@ sub _chunk_count_checker {
         return 1;
     }
 
-    ### XXX: This is dumb, but overload has really bizarre behavior with its "copy
-    ### constructor".  When trying to do operations like += on an overloaded object with
-    ### refcount>1, it tries to call its '=' copy constructor and fails because T:PB:S
-    ### doesn't have a '=' overload.  So, we sidestep it by using direct increment calls.
-
     my $chunk_percent = $ls->{chunk_count} / $ls->{chunk_size};
     $ls->{checked_count}++;
 
     if    ($ls->{chunk_count} == 0 && $self->min_chunk_percent > 0) {
         # No rows: Skip the block entirely, and accelerate the stepping
-        $self->_print_debug_status($progress => 'skipped');
+        $self->_print_debug_status('skipped');
 
-        $progress->increment( $ls->{multiplier_range} * $self->chunk_size );
+        $self->_increment_progress;
         $ls->{start}     = undef;
         $ls->{prev_end}  = $ls->{end};
         $ls->{timer}     = time;
@@ -1032,7 +1038,7 @@ sub _chunk_count_checker {
     }
     elsif ($chunk_percent > 1 + $self->min_chunk_percent) {
         # Too many rows: Backtrack to the previous range and try to bisect
-        $self->_print_debug_status($progress => 'shrunk');
+        $self->_print_debug_status('shrunk');
 
         $ls->{timer} = time;
 
@@ -1065,7 +1071,7 @@ sub _chunk_count_checker {
     }
     elsif ($chunk_percent < $self->min_chunk_percent) {
         # Too few rows: Keep the start ID and accelerate towards a better endpoint
-        $self->_print_debug_status($progress => 'expanded');
+        $self->_print_debug_status('expanded');
 
         $ls->{timer} = time;
 
@@ -1092,7 +1098,7 @@ necessary.
 =cut
 
 sub _runtime_checker {
-    my ($self, $progress) = @_;
+    my ($self) = @_;
     my $ls = $self->_loop_state;
     return unless $self->target_time;
 
@@ -1151,7 +1157,7 @@ sub _runtime_checker {
         my $integer = $self->cldr->decimal_formatter;
         my $percent = $self->cldr->percent_formatter;
 
-        $progress->message( sprintf(
+        $ls->{progress_bar}->message( sprintf(
             "Processing too %s, avg %4s of target time, adjusting chunk size from %s to %s",
             $adjective,
             $percent->format( 1 / $adjust_factor ),
@@ -1166,6 +1172,22 @@ sub _runtime_checker {
     return 1;
 }
 
+=head2 _increment_progress
+
+Increments the progress bar.
+
+=cut
+
+sub _increment_progress {
+    my ($self) = @_;
+    my $ls = $self->_loop_state;
+    my $progress = $ls->{progress_bar};
+
+    my $so_far = $ls->{end} - $self->min_id + 1;
+    $progress->target($so_far+1) if $ls->{end} > $self->max_id;
+    $progress->update($so_far);
+}
+
 =head2 _print_debug_status
 
 Prints out a standard debug status line, if debug is enabled.  What it prints is
@@ -1175,7 +1197,7 @@ pulled from L</_loop_state>.
 =cut
 
 sub _print_debug_status {
-    my ($self, $progress, $action) = @_;
+    my ($self, $action) = @_;
     return unless $self->debug;
 
     my $ls    = $self->_loop_state;
@@ -1214,7 +1236,7 @@ sub _print_debug_status {
         ;
     }
 
-    return $progress->message($message);
+    return $ls->{progress_bar}->message($message);
 }
 
 =head1 BUGS
