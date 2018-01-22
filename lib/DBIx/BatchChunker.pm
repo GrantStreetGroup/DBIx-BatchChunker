@@ -1,5 +1,8 @@
 package DBIx::BatchChunker;
 
+our $AUTHORITY = 'cpan:GSG';
+our $VERSION   = '0.90';
+
 use Moo;
 
 use CLDR::Number;
@@ -12,7 +15,6 @@ use Data::Float;
 use List::Util        1.33 (qw( min max sum any ));  # has any/all/etc.
 use POSIX                   qw( ceil );
 use Scalar::Util            qw( blessed weaken );
-use Sub::Name;
 use Term::ProgressBar 2.14;                          # with silent option
 use Time::HiRes             qw( time sleep );
 
