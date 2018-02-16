@@ -1,7 +1,7 @@
 package DBIx::BatchChunker;
 
 our $AUTHORITY = 'cpan:GSG';
-our $VERSION   = '0.90';
+our $VERSION   = '0.91';
 
 use Moo;
 
@@ -30,7 +30,7 @@ DBIx::BatchChunker - Run large database changes safely
 
 =head1 VERSION
 
-version 0.90
+version 0.91
 
 =head1 SYNOPSIS
 
