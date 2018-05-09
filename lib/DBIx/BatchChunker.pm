@@ -382,7 +382,7 @@ has coderef => (
 The amount of rows to be processed in each loop.
 
 Default is 1000 rows.  This figure should be sized to keep per-chunk processing time
-at around 10 seconds.  If this is too large, rows may lock for too long.  If it's too
+at around 15 seconds.  If this is too large, rows may lock for too long.  If it's too
 small, processing may be unnecessarily slow.
 
 =cut
@@ -405,7 +405,8 @@ size is grossly inaccurate to the workload, you could end up with several chunks
 beginning causing long-lasting locks before the runtime targeting reduces them down to a
 reasonable size.
 
-Default is 0, which turns off runtime targeting.
+Default is 15 seconds.  Set this to zero to turn off runtime targeting.  (This was
+previously defaulted to off prior to v0.92.)
 
 =cut
 
@@ -413,7 +414,7 @@ has target_time => (
     is       => 'ro',
     isa      => PositiveOrZeroNum,
     required => 0,
-    default  => 0,
+    default  => 15,
 );
 
 =head3 sleep

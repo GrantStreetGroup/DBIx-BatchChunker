@@ -44,6 +44,7 @@ subtest 'DBIC Processing (+ process_past_max)' => sub {
 
         process_past_max  => 1,
         min_chunk_percent => 0,
+        target_time       => 0,
     );
 
     is($batch_chunker->id_name, 'me.trackid', 'Right id_name guessed');
@@ -85,6 +86,7 @@ subtest 'DBIC Processing + single_rows (+ rsc)' => sub {
 
         single_rows       => 1,
         min_chunk_percent => 0,
+        target_time       => 0,
     );
 
     is($batch_chunker->id_name, 'me.trackid', 'Right id_name guessed and aliased');
@@ -116,7 +118,8 @@ subtest 'Active DBI Processing (+ sleep)' => sub {
         max_sth => $dbh->prepare('SELECT MAX(trackid) FROM track WHERE position = 1'),
         sth     => $sth,
 
-        sleep => 0.1,
+        target_time => 0,
+        sleep       => 0.1,
     );
 
     # Calculate
@@ -159,6 +162,7 @@ subtest 'Query DBI Processing (+ min_chunk_percent)' => sub {
             note explain $ls if $BATCHCHUNK_TEST_DEBUG;
         },
 
+        target_time       => 0,
         # any missing row in a standard sized chunk will trigger an expansion
         min_chunk_percent => sprintf("%.2f",
             ($CHUNK_SIZE - 1) / $CHUNK_SIZE
@@ -208,6 +212,7 @@ subtest 'Query DBI Processing + single_row (+ rsc)' => sub {
         },
 
         single_rows => 1,
+        target_time => 0,
     );
 
     # Calculate
@@ -239,6 +244,7 @@ subtest 'DIY Processing (+ process_past_max)' => sub {
         },
 
         process_past_max => 1,
+        target_time      => 0,
     );
 
     # Calculate
@@ -277,6 +283,7 @@ subtest 'process_past_max + min_chunk_percent' => sub {
         },
 
         process_past_max  => 1,
+        target_time       => 0,
         # any missing row in a standard sized chunk will trigger an expansion
         min_chunk_percent => sprintf("%.2f",
             ($CHUNK_SIZE - 1) / $CHUNK_SIZE
