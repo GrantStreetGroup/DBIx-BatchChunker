@@ -422,10 +422,11 @@ has target_time => (
 The number of seconds to sleep after each chunk.  It uses L<Time::HiRes>'s version, so
 fractional numbers are allowed.
 
-Default is 0, but it is highly recommended to turn this on (say, 5 to 10 seconds) for
-really long one-off DB operations, especially if a lot of disk I/O is involved.  Without
-this, there's a chance that the slaves will have a hard time keeping up, and/or the
-master won't have enough processing power to keep up with standard load.
+Default is 0, which is fine for most operations.  But, it is highly recommended to turn
+this on (say, 5 to 10 seconds) for really long one-off DB operations, especially if a lot
+of disk I/O is involved.  Without this, there's a chance that the slaves will have a hard
+time keeping up, and/or the master won't have enough processing power to keep up with
+standard load.
 
 This will increase the overall processing time of the loop, so try to find a balance
 between the two.
