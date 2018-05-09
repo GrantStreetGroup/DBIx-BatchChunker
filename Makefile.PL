@@ -4,13 +4,8 @@ use warnings FATAL => 'all';
 use ExtUtils::MakeMaker;
 
 my $module_name = 'DBIx::BatchChunker';
-
-my $dist_name = $module_name;
-$dist_name =~ s/::/-/g;
-
-my $module_file = $module_name;
-$module_file =~ s{::}{/}g;
-$module_file = "lib/$module_file.pm";
+my $module_file = 'lib/DBIx/BatchChunker.pm';
+my $dist_name   = 'DBIx-BatchChunker';
 
 # Standard boilerplate WriteMakefile args
 my %WriteMakefileArgs = (
@@ -19,9 +14,9 @@ my %WriteMakefileArgs = (
     VERSION_FROM  => $module_file,
     ABSTRACT_FROM => $module_file,
     AUTHOR        => 'Grant Street Group <developers@grantstreet.com>',
-
-    # The recommended choice by Larry Wall and crew
     LICENSE       => 'artistic_2',
+
+    MIN_PERL_VERSION => '5.8.1',
 
     # Use a sane version of EUMM that supports *_REQUIRES
     CONFIGURE_REQUIRES => { 'ExtUtils::MakeMaker' => '6.64' },
@@ -45,6 +40,7 @@ my %WriteMakefileArgs = (
         x_authority => 'cpan:GSG',
     },
 
+    dist  => { COMPRESS => 'gzip -9f', SUFFIX => 'gz' },
     clean => { FILES => "$dist_name-*" },
     test  => { TESTS => 't/*.t' },
 );
@@ -97,3 +93,33 @@ $WriteMakefileArgs{META_MERGE}{prereqs} = {
 };
 
 WriteMakefile(%WriteMakefileArgs);
+
+# Custom Makefile additions
+package MY;
+
+sub postamble {
+    my $self = shift;
+    return join("\n",
+        '# The first line works around https://github.com/naturalist/pod-markdown-github/issues/7',
+        'devdeps :',
+        "\t".'cpanm --notest Pod::Markdown::Github',
+        "\t".'cpanm --with-develop --installdeps .',
+        '',
+        'readme :',
+        "\t".'$(PERLRUN) -MPod::Readme -e "Pod::Readme->new( input_file => \'$(VERSION_FROM)\', translate_to_file => \'README\',    translation_class => \'Pod::Simple::Text\'     )->run"',
+        "\t".'$(PERLRUN) -MPod::Readme -e "Pod::Readme->new( input_file => \'$(VERSION_FROM)\', translate_to_file => \'README.md\', translation_class => \'Pod::Markdown::Github\' )->run"',
+        '',
+        'prove :',
+        "\t".'prove -lr t/',
+        '',
+        'authorprove :',
+        "\t".'AUTHOR_TESTING=1 prove -lr t/ xt/',
+        '',
+        'authortest :: TEST_FILES += xt/*.t',
+        'authortest :: FULLPERLRUN := AUTHOR_TESTING=1 $(FULLPERLRUN)',
+        'authortest :: test',
+        '',
+        'predist :: devdeps manifest readme authorprove',
+    );
+}
+
