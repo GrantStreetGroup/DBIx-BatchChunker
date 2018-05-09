@@ -322,8 +322,8 @@ Boolean.  If turned on, displays timing stats on each chunk, as well as total nu
 has debug => (
     is       => 'rw',
     isa      => Bool,
-    required => 1,
-    default  => sub { 0 },
+    required => 0,
+    default  => 0,
 );
 
 =head2 Common Attributes
@@ -390,8 +390,8 @@ small, processing may be unnecessarily slow.
 has chunk_size => (
     is       => 'ro',
     isa      => PositiveInt,
-    required => 1,
-    default  => sub { 1000 },
+    required => 0,
+    default  => 1000,
 );
 
 =head3 target_time
@@ -413,7 +413,7 @@ has target_time => (
     is       => 'ro',
     isa      => PositiveOrZeroNum,
     required => 0,
-    default  => sub { 0 },
+    default  => 0,
 );
 
 =head3 sleep
@@ -434,8 +434,8 @@ between the two.
 has 'sleep' => (
     is       => 'ro',
     isa      => PositiveOrZeroNum,
-    required => 1,
-    default  => sub { 0 },
+    required => 0,
+    default  => 0,
 );
 
 =head3 process_past_max
@@ -459,8 +459,8 @@ something lower.
 has process_past_max => (
     is       => 'ro',
     isa      => Bool,
-    required => 1,
-    default  => sub { 0 },
+    required => 0,
+    default  => 0,
 );
 
 =head3 single_rows
@@ -481,8 +481,8 @@ Used only by L</DBIC Processing> and L</Query DBI Processing>.
 has single_rows => (
     is       => 'ro',
     isa      => Bool,
-    required => 1,
-    default  => sub { 0 },
+    required => 0,
+    default  => 0,
 );
 
 =head3 min_chunk_percent
@@ -517,8 +517,8 @@ has min_chunk_percent => (
         inlined    => sub { undef, qq($_ >= 0 && $_ <= 1) },
         message    => sub { 'Must be a number between 0 and 1' },
     ),
-    required => 1,
-    default  => sub { 0.5 },
+    required => 0,
+    default  => 0.5,
 );
 
 =head3 min_id

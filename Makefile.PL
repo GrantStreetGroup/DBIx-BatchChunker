@@ -51,7 +51,7 @@ my %WriteMakefileArgs = (
     PREREQ_PM     => {
         # Start from "scan-perl-prereqs --pretty lib"
 
-        'Moo'                    => '2.00',  # sane minimum baseline
+        'Moo'                    => '2.000002',  # bypass the default=>0 + required=>1 bug
         'CLDR::Number'           => 0,
         'Types::Standard'        => '1.00',  # sane minimum baseline
         'Types::Common::Numeric' => 0,
