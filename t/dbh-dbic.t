@@ -260,6 +260,50 @@ subtest 'DIY Processing (+ process_past_max)' => sub {
     cmp_ok($calls, '==', $right_calls, 'Right number of calls');
 };
 
+subtest 'DIY Processing (+ min_chunk_percent)' => sub {
+    my $calls = 0;
+    my $max_range = 0;
+
+    # Constructor
+    my $batch_chunker = DBIx::BatchChunker->new(
+        chunk_size => $CHUNK_SIZE,
+
+        min_sth   => $dbh->prepare('SELECT MIN(trackid)   FROM track WHERE position = 1'),
+        max_sth   => $dbh->prepare('SELECT MAX(trackid)   FROM track WHERE position = 1'),
+        count_sth => $dbh->prepare('SELECT COUNT(trackid) FROM track WHERE position = 1 AND trackid BETWEEN ? AND ?'),
+        coderef   => sub {
+            my ($bc, $start, $end) = @_;
+            ok(looks_like_number $start,  '$start is a number');
+            ok(looks_like_number $end,    '$end   is a number');
+            $calls++;
+
+            my $ls     = $bc->_loop_state;
+            my $range  = $ls->{end} - $ls->{start} + 1;
+            $max_range = $range if $range > $max_range;
+            note explain $ls if $BATCHCHUNK_TEST_DEBUG;
+        },
+
+        target_time       => 0,
+        # any missing row in a standard sized chunk will trigger an expansion
+        min_chunk_percent => sprintf("%.2f",
+            ($CHUNK_SIZE - 1) / $CHUNK_SIZE
+        ) + 0.01,
+    );
+
+    # Calculate
+    ok($batch_chunker->calculate_ranges, 'calculate_ranges ok');
+    ok($batch_chunker->min_id,           'min_id ok');
+    ok($batch_chunker->max_id,           'max_id ok');
+
+    my $range = $batch_chunker->max_id - $batch_chunker->min_id + 1;
+    my $multiplier_range = ceil($range / $CHUNK_SIZE);
+
+    # Process
+    $batch_chunker->execute;
+    cmp_ok($calls,      '<', $multiplier_range, 'Fewer coderef calls than normal');
+    cmp_ok($max_range,  '>', $CHUNK_SIZE,       'Expanded chunk at least once');
+};
+
 subtest 'process_past_max + min_chunk_percent' => sub {
     my $calls     = 0;
     my $max_count = 0;

@@ -146,6 +146,10 @@ multiplier loop does not touch the database.  The coderef is merely passed the s
 end IDs for each chunk.  It is expected that the coderef will run through all database
 operations using those start and end points.
 
+It's still valid to include L</min_sth>, L</max_sth>, and/or L</count_sth> in the
+constructor to enable features like L<max ID recalculation|/process_past_max> or
+L<chunk resizing|/min_chunk_percent>.
+
 =head3 TL;DR Version
 
     $sth                             = Active DBI Processing
@@ -505,8 +509,7 @@ if L</sleep> is enabled.
 If this needs to be disabled, set this to 0.  The maximum chunk percentage does not have
 a setting and is hard-coded at C<< 100% + min_chunk_percent >>.
 
-Used only by L</DBIC Processing> and L</Query DBI Processing>.  For the latter,
-L</count_sth> is also required to enable chunk resizing.
+If DBIC processing isn't used, L</count_sth> is also required to enable chunk resizing.
 
 =cut
 
@@ -864,11 +867,11 @@ sub execute {
     my $self = shift;
 
     # Figure out the method to use
-    my $coderef = $self->coderef;
-    my ($sth, $count_sth, $rs, $id_name);
+    my $coderef   = $self->coderef;
+    my $count_sth = $self->count_sth;
+    my ($sth, $rs, $id_name);
     if    ($self->sth) {
         $sth       = $self->sth;
-        $count_sth = $self->count_sth;
     }
     elsif ($self->rs && $coderef) {
         $rs      = $self->rs;
@@ -918,7 +921,7 @@ sub execute {
         next unless $self->_process_past_max_checker;
 
         if ($sth) {
-            ### DML statement handle
+            ### Statement handle
 
             # Figure out if the row count is worth the work
             if ($count_sth) {
@@ -972,6 +975,12 @@ sub execute {
         else {
             ### Something a bit more free-form
 
+            # Figure out if the row count is worth the work
+            if ($count_sth) {
+                $count_sth->execute(@$ls{qw< start end >});
+                ($ls->{chunk_count}) = $count_sth->fetchrow_array;
+            }
+
             next unless $self->_chunk_count_checker;
             $self->$coderef(@$ls{qw< start end >});
         }
@@ -1024,7 +1033,7 @@ sub _process_past_max_checker {
     return 1 unless $self->process_past_max;
     return 1 unless $ls->{end} > $self->max_id;
 
-    # No checks for DIY, of course
+    # No checks for DIY, if they didn't include a max_sth
     unless ($self->rsc || $self->max_sth) {
         # There's no way to size this, so skip past the max as one block
         $ls->{end} = $ls->{max_end};
