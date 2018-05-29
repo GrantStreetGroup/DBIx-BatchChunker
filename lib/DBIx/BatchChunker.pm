@@ -734,6 +734,74 @@ around BUILDARGS => sub {
         $args{rsc}     = $rs->get_column( $args{id_name} );
     }
 
+    # Find something to use as a dbi_connector, if it doesn't already exist
+    my @old_attrs = qw< sth min_sth max_sth count_sth >;
+    my @new_attrs = map { my $k = $_; $k =~ s/sth$/stmt/; $k } @old_attrs;
+    my $example_key = first { $args{$_} } @old_attrs;
+    if ($example_key && !$args{dbi_connector}) {
+        warn join "\n",
+            'The sth/*_sth options are now considered legacy usage in DBIx::BatchChunker.  Because there is no',
+            'way to re-acquire the password, any attempt to reconnect will fail.  Please use dbi_connector and',
+            'stmt/*_stmt instead for reconnection support.',
+            ''
+        ;
+
+        # NOTE: There was a way to monkey-patch _connect to use $dbh->clone, but I've considered it
+        # too intrusive of a solution to use.  Better to demand that the user switch to the new
+        # attributes, but have something that still works in most cases.
+
+        # Attempt to build some sort of Connector object
+        require DBIx::Connector::Retry;
+        my $dbh = $args{$example_key}->{Database};
+
+        my $conn = DBIx::Connector::Retry->new(
+            connect_info => [
+                join(':', 'dbi', $dbh->{Driver}{Name}, $dbh->{Name}),
+                $dbh->{Username},
+                '',  # XXX: Can't acquire the password
+                # Sane %attr defaults on the off-chance that it actually re-connects
+                { AutoCommit => 1, RaiseError => 1 },
+            ],
+
+            # Do not disconnect on DESTROY.  The $dbh might still be used post-run.
+            disconnect_on_destroy => 0,
+        );
+
+        # Pretend $conn->_connect was called and store our pre-existing $dbh
+        $conn->{_pid} = $$;
+        $conn->{_tid} = threads->tid if $INC{'threads.pm'};
+        $conn->{_dbh} = $dbh;
+        $conn->driver;
+
+        $args{dbi_connector} = $conn;
+    }
+
+    # Handle legacy options for sth/*_sth
+    foreach my $old_attr (grep { $args{$_} } @old_attrs) {
+        my $new_attr = $old_attr;
+        $new_attr =~ s/sth$/stmt/;
+
+        my $sth = delete $args{$old_attr};
+        $args{$new_attr} ||= [ $sth->{Statement} ];
+    }
+
+    # Now check to make sure dbi_connector is available for DBI processing
+    die 'DBI processing requires a dbi_connector attribute!' if !$args{dbi_connector} && (
+        first { $args{$_} } @new_attrs
+    );
+
+    # Other sanity checks
+    die 'Range calculations requires one of these attr sets: rsc, rs, or dbi_connector + min_stmt + max_stmt' unless (
+        $args{rsc} ||
+        ($args{min_stmt} && $args{max_stmt})
+    );
+
+    die 'Block execution requires one of these attr sets: dbi_connector + stmt, rs + coderef, or coderef' unless (
+        $args{stmt} ||
+        ($args{rs} && $args{coderef}) ||
+        $args{coderef}
+    );
+
     $class->$next( %args );
 };
 
@@ -814,14 +882,6 @@ If either of the min/max statements don't return any ID data, this method will r
 
 sub calculate_ranges {
     my $self = shift;
-
-    # Figure out how we're going to get min/max
-    unless (
-        $self->rsc ||  # will also auto-create one from $self->rs
-        ($self->min_sth && $self->max_sth)
-    ) {
-        die 'Need at least a ResultSetColumn, ResultSet, or min/max statement handles to calculate ranges!';
-    }
 
     my $column_name = $self->id_name || '';
     $column_name =~ s/^\w+\.//;
