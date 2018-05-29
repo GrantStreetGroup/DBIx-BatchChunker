@@ -915,21 +915,6 @@ More details can be found in the L</Processing Modes> and L</ATTRIBUTES> section
 sub execute {
     my $self = shift;
 
-    # Figure out the method to use
-    my $coderef   = $self->coderef;
-    my $count_sth = $self->count_sth;
-    my ($sth, $rs, $id_name);
-    if    ($self->sth) {
-        $sth       = $self->sth;
-    }
-    elsif ($self->rs && $coderef) {
-        $rs      = $self->rs;
-        $id_name = $self->id_name;
-    }
-    elsif (!$coderef) {
-        die 'Need at least a statement handle, ResultSet + CodeRef, or CodeRef to run through the loop!';
-    }
-
     my $count;
     if (defined $self->min_id && defined $self->max_id) {
         $count = $self->max_id - $self->min_id + 1;
@@ -969,70 +954,8 @@ sub execute {
 
         next unless $self->_process_past_max_checker;
 
-        if ($sth) {
-            ### Statement handle
-
-            # Figure out if the row count is worth the work
-            if ($count_sth) {
-                $count_sth->execute(@$ls{qw< start end >});
-                ($ls->{chunk_count}) = $count_sth->fetchrow_array;
-            }
-
-            next unless $self->_chunk_count_checker;
-
-            # Execute the DQL/DML statement handle
-            $sth->execute(@$ls{qw< start end >});
-
-            if ($coderef) {
-                if ($self->single_rows) {
-                    # Transactional work
-                    my $dbh = $sth->{Database};
-
-                    $dbh->begin_work;
-                    while (my $row = $sth->fetchrow_hashref('NAME_lc')) { $self->$coderef($row) }
-                    $dbh->commit;
-                }
-                else {
-                    # Bulk work
-                    $self->$coderef($sth);
-                    $sth->finish;
-                }
-            }
-        }
-        elsif ($rs && $coderef) {
-            ### ResultSet with coderef
-
-            my $chunk_rs = $rs->search({
-                $id_name => { -between => [@$ls{qw< start end >}] },
-            });
-
-            # Figure out if the row count is worth the work
-            $ls->{chunk_count} = $chunk_rs->count;
-            next unless $self->_chunk_count_checker;
-
-            if ($self->single_rows) {
-                # Transactional work
-                $rs->result_source->schema->txn_do( sub {
-                    while (my $row = $chunk_rs->next) { $self->$coderef($row) }
-                });
-            }
-            else {
-                # Bulk work
-                $self->$coderef($chunk_rs);
-            }
-        }
-        else {
-            ### Something a bit more free-form
-
-            # Figure out if the row count is worth the work
-            if ($count_sth) {
-                $count_sth->execute(@$ls{qw< start end >});
-                ($ls->{chunk_count}) = $count_sth->fetchrow_array;
-            }
-
-            next unless $self->_chunk_count_checker;
-            $self->$coderef(@$ls{qw< start end >});
-        }
+        # The actual DB processing
+        next unless $self->_process_block;
 
         # Record the time quickly
         $ls->{prev_runtime} = time - $ls->{timer};
@@ -1064,6 +987,99 @@ sub execute {
 }
 
 =head1 PRIVATE METHODS
+
+=head2 _process_block
+
+Runs the DB work and passes it to the coderef.  Its return value determines whether the
+block should be processed or not.
+
+=cut
+
+sub _process_block {
+    my ($self) = @_;
+
+    my $ls      = $self->_loop_state;
+    my $conn    = $self->dbi_connector;
+    my $coderef = $self->coderef;
+    my $rs      = $self->rs;
+
+    # Figure out if the row count is worth the work
+    my $chunk_rs;
+    if (my $count_stmt = $self->count_stmt) {
+        ($ls->{chunk_count}) = $conn->run(sub {
+            $_->selectrow_array(
+                @$count_stmt,
+                (@$count_stmt == 1 ? undef : ()),
+                @$ls{qw< start end >},
+            );
+        });
+    }
+    elsif ($rs) {
+        $chunk_rs = $rs->search({
+            $self->id_name => { -between => [@$ls{qw< start end >}] },
+        });
+
+        $ls->{chunk_count} = $chunk_rs->count;
+    }
+
+    return unless $self->_chunk_count_checker;
+
+    # Do the work
+    if (my $stmt = $self->stmt) {
+        ### Statement handle
+        my @prepare_args = @$stmt > 2 ? @$stmt[0..1] : @$stmt;
+        my @execute_args = (
+            (@$stmt > 2 ? @$stmt[2..$#$stmt] : ()),
+            @$ls{qw< start end >},
+        );
+
+        # NOTE: Try to minimize the amount of closures by using $self as much as possible.
+
+        if ($self->single_rows && $coderef) {
+            # Transactional work
+            $conn->txn(sub {
+                $self->_loop_state->{timer} = time;  # reset timer on retries
+
+                my $sth = $_->prepare(@prepare_args);
+                $sth->execute(@execute_args);
+
+                while (my $row = $sth->fetchrow_hashref('NAME_lc')) { $self->coderef->($self, $row) }
+            });
+        }
+        else {
+            # Bulk work (or DML)
+            $conn->run(sub {
+                $self->_loop_state->{timer} = time;  # reset timer on retries
+
+                my $sth = $_->prepare(@prepare_args);
+                $sth->execute(@execute_args);
+
+                $self->coderef->($self, $sth) if $self->coderef;
+            });
+        }
+    }
+    elsif ($self->rs && $coderef) {
+        ### ResultSet with coderef
+
+        if ($self->single_rows) {
+            # Transactional work
+            $rs->result_source->schema->txn_do( sub {
+                while (my $row = $chunk_rs->next) { $self->coderef->($self, $row) }
+            });
+        }
+        else {
+            # Bulk work
+            $self->coderef->($self, $chunk_rs);
+        }
+    }
+    else {
+        ### Something a bit more free-form
+
+        $self->$coderef(@$ls{qw< start end >});
+    }
+
+    return 1;
+}
 
 =head2 _process_past_max_checker
 
