@@ -7,12 +7,12 @@ use Moo;
 
 use CLDR::Number;
 
-use Types::Standard        qw( Str Num Bool HashRef CodeRef InstanceOf );
+use Types::Standard        qw( Any Item Str Num Bool Undef ArrayRef HashRef CodeRef InstanceOf Tuple Maybe Optional slurpy );
 use Types::Common::Numeric qw( PositiveInt PositiveOrZeroInt PositiveOrZeroNum );
 use Type::Utils;
 
 use Data::Float;
-use List::Util        1.33 (qw( min max sum any ));  # has any/all/etc.
+use List::Util        1.33 (qw( min max sum any first ));  # has any/all/etc.
 use POSIX                   qw( ceil );
 use Scalar::Util            qw( blessed weaken );
 use Term::ProgressBar 2.14;                          # with silent option
@@ -109,12 +109,12 @@ Result object instead of the chunk ResultSet.
 
 =head3 Active DBI Processing
 
-If an L</sth> (DBI statement handle object) is passed without a L</coderef>, the statement
+If an L</stmt> (DBI statement handle args) is passed without a L</coderef>, the statement
 handle is merely executed on each iteration with the start and end IDs.  It is assumed
 that the SQL for the statement handle contains exactly two placeholders for a C<BETWEEN>
 clause.  For example:
 
-    my $update_sth = $dbh->prepare_cached(q{
+    my $update_stmt = q{
     UPDATE
         accounts a
         JOIN account_updates au USING (account_id)
@@ -127,37 +127,46 @@ clause.  For example:
 
 The C<BETWEEN> clause should, of course, match the IDs being used in the loop.
 
+The statement is ran with L</dbi_connector> for retry protection.  Therefore, the
+statement should also be idempotant.
+
 =head3 Query DBI Processing
 
-If both a L</sth> and a L</coderef> are passed, the statement handle is executed.  Like
-the L</Active DBI Processing> mode, the SQL for the statement handle should contain
-exactly two placeholders for a C<BETWEEN> clause.  Then the C<$sth> is passed to the
-coderef.  It's up to the coderef to extract data from the executed statement handle, and
-do something with it.
+If both a L</stmt> and a L</coderef> are passed, the statement handle is prepared and
+executed.  Like the L</Active DBI Processing> mode, the SQL for the statement should
+contain exactly two placeholders for a C<BETWEEN> clause.  Then the C<$sth> is passed to
+the coderef.  It's up to the coderef to extract data from the executed statement handle,
+and do something with it.
 
 If C<single_rows> is enabled, each chunk is wrapped in a transaction and the coderef is
 called for each row in the chunk.  In this case, the coderef is passed a hashref of the
 row instead of the executed C<$sth>, with lowercase alias names used as keys.
 
+Note that in both cases, the coderef execution is encapsulated in a L<DBIx::Connector::Retry>
+call to either C<run> or C<txn> (using L</dbi_connector>), so any failures will
+re-connect and retry the coderef.  Because of this, any changes you make within the
+coderef should be idempotant, or should at least be able to skip over any
+already-processed rows.
+
 =head3 DIY Processing
 
-If a L</coderef> is passed but neither a C<sth> nor a C<rs> are passed, then the
+If a L</coderef> is passed but neither a C<stmt> nor a C<rs> are passed, then the
 multiplier loop does not touch the database.  The coderef is merely passed the start and
 end IDs for each chunk.  It is expected that the coderef will run through all database
 operations using those start and end points.
 
-It's still valid to include L</min_sth>, L</max_sth>, and/or L</count_sth> in the
+It's still valid to include L</min_stmt>, L</max_stmt>, and/or L</count_stmt> in the
 constructor to enable features like L<max ID recalculation|/process_past_max> or
 L<chunk resizing|/min_chunk_percent>.
 
 =head3 TL;DR Version
 
-    $sth                             = Active DBI Processing
-    $sth + $coderef                  = Query DBI Processing  | $bc->$coderef($executed_sth)
-    $sth + $coderef + single_rows=>1 = Query DBI Processing  | $bc->$coderef($row_hashref)
-    $rs  + $coderef                  = DBIC Processing       | $bc->$coderef($chunk_rs)
-    $rs  + $coderef + single_rows=>1 = DBIC Processing       | $bc->$coderef($result)
-           $coderef                  = DIY Processing        | $bc->$coderef($start, $end)
+    $stmt                             = Active DBI Processing
+    $stmt + $coderef                  = Query DBI Processing  | $bc->$coderef($executed_sth)
+    $stmt + $coderef + single_rows=>1 = Query DBI Processing  | $bc->$coderef($row_hashref)
+    $rs   + $coderef                  = DBIC Processing       | $bc->$coderef($chunk_rs)
+    $rs   + $coderef + single_rows=>1 = DBIC Processing       | $bc->$coderef($result)
+            $coderef                  = DIY Processing        | $bc->$coderef($start, $end)
 
 =head1 ATTRIBUTES
 
@@ -194,64 +203,97 @@ has rsc => (
 
 =head2 DBI Processing Attributes
 
-=head3 min_sth
+=head3 dbi_connector
 
-=head3 max_sth
-
-L<DBI> statement handles.  When executed, these statements should each return a single
-value (to be used by L<DBI/fetchrow_array>), either the minimum or maximum ID that will be
-affected by the DB changes.  These are used by L</calculate_ranges>.  Required if using
-either type of DBI Processing.
-
-=cut
-
-has min_sth => (
-    is       => 'ro',
-    isa      => InstanceOf['DBI::st'],
-    required => 0,
-);
-
-has max_sth => (
-    is       => 'ro',
-    isa      => InstanceOf['DBI::st'],
-    required => 0,
-);
-
-=head3 sth
-
-If using L</Active DBI Processing> (no coderef), this is a L<do-able|DBI/do> statement
-handle (usually DML like C<INSERT/UPDATE/DELETE>).  If using L</Query DBI Processing>
-(with coderef), this is a passive DQL (C<SELECT>) statement handle.
-
-In either case, the statement should contain C<BETWEEN> placeholders (one for the
-beginning and one for the end of the range), as it will be executed with the start/end ID
-points.
+A L<DBIx::Connector::Retry> object.  Instead of L<DBI> statement handles, this is the
+recommended way for BatchChunker to interface with the DBI, as it handles retries on
+failures.  The connection mode used is whatever default is set within the object.
 
 Required for DBI Processing.
 
 =cut
 
-has sth => (
+has dbi_connector => (
     is       => 'ro',
-    isa      => InstanceOf['DBI::st'],
+    isa      => InstanceOf['DBIx::Connector::Retry'],
     required => 0,
 );
 
-=head3 count_sth
+=head3 min_stmt
 
-A C<SELECT COUNT> statement handle.  Like L</sth>, it should contain C<BETWEEN>
-placeholders.  In fact, the SQL should look exactly like the L</sth> query, except with
-C<COUNT(*)> instead of the column list.
+=head3 max_stmt
+
+SQL statement strings or an arrayref of parameters for L<DBI/selectrow_array>.
+
+When executed, these statements should each return a single value, either the minimum or
+maximum ID that will be affected by the DB changes.  These are used by
+L</calculate_ranges>.  Required if using either type of DBI Processing.
+
+=cut
+
+my $SQLStringOrSTHArgs_type = Type::Utils::declare(
+    name       => 'SQLStringOrSTHArgs',
+    # Allow an SQL string, an optional hashref/undef, and any number of strings/undefs
+    parent     => Tuple->parameterize(Str, Optional[Maybe[HashRef]], slurpy ArrayRef[Maybe[Str]]),
+    coercion   => sub { $_ = [ $_ ] if Str->check($_); $_ },
+    message    => sub { 'Must be either an SQL string or an arrayref of parameters for $sth creation (SQL + hashref/undef + binds)' },
+);
+
+has min_stmt => (
+    is       => 'ro',
+    isa      => $SQLStringOrSTHArgs_type,
+    required => 0,
+    coerce   => 1,
+);
+
+has max_stmt => (
+    is       => 'ro',
+    isa      => $SQLStringOrSTHArgs_type,
+    required => 0,
+    coerce   => 1,
+);
+
+=head3 stmt
+
+A SQL statement string or an arrayref of parameters for L<DBI/prepare> + binds.
+
+If using L</Active DBI Processing> (no coderef), this is a L<do-able|DBI/do> statement
+(usually DML like C<INSERT/UPDATE/DELETE>).  If using L</Query DBI Processing> (with
+coderef), this is a passive DQL (C<SELECT>) statement.
+
+In either case, the statement should contain C<BETWEEN> placeholders, which will be
+executed with the start/end ID points.  If there are already bind placeholders in the
+arrayref, then make sure the C<BETWEEN> bind points are last on the list.
+
+Required for DBI Processing.
+
+=cut
+
+has stmt => (
+    is       => 'ro',
+    isa      => $SQLStringOrSTHArgs_type,
+    required => 0,
+    coerce   => 1,
+);
+
+=head3 count_stmt
+
+A C<SELECT COUNT> SQL statement string or an arrayref of parameters for
+L<DBI/selectrow_array>.
+
+Like L</stmt>, it should contain C<BETWEEN> placeholders.  In fact, the SQL should look
+exactly like the L</stmt> query, except with C<COUNT(*)> instead of the column list.
 
 Used only for L</Query DBI Processing>.  Optional, but recommended for
 L<chunk resizing|/min_chunk_percent>.
 
 =cut
 
-has count_sth => (
+has count_stmt => (
     is       => 'ro',
-    isa      => InstanceOf['DBI::st'],
+    isa      => $SQLStringOrSTHArgs_type,
     required => 0,
+    coerce   => 1,
 );
 
 =head2 Progress Bar Attributes
@@ -363,11 +405,11 @@ The coderef that will be called either on each chunk or each row, depending on h
 L</single_rows> is set.  The first input is always the BatchChunker object.  The rest
 vary depending on the processing mode:
 
-    $sth + $coderef                  = Query DBI Processing  | $bc->$coderef($executed_sth)
-    $sth + $coderef + single_rows=>1 = Query DBI Processing  | $bc->$coderef($row_hashref)
-    $rs  + $coderef                  = DBIC Processing       | $bc->$coderef($chunk_rs)
-    $rs  + $coderef + single_rows=>1 = DBIC Processing       | $bc->$coderef($result)
-           $coderef                  = DIY Processing        | $bc->$coderef($start, $end)
+    $stmt + $coderef                  = Query DBI Processing  | $bc->$coderef($executed_sth)
+    $stmt + $coderef + single_rows=>1 = Query DBI Processing  | $bc->$coderef($row_hashref)
+    $rs   + $coderef                  = DBIC Processing       | $bc->$coderef($chunk_rs)
+    $rs   + $coderef + single_rows=>1 = DBIC Processing       | $bc->$coderef($result)
+            $coderef                  = DIY Processing        | $bc->$coderef($start, $end)
 
 The loop does not monitor the return values from the coderef.
 
@@ -448,7 +490,7 @@ has 'sleep' => (
 
 Boolean that controls whether to check past the L</max_id> during the loop.  If the loop
 hits the end point, it will run another maximum ID check in the DB, and adjust C<max_id>
-accordingly.  If it somehow cannot run a DB check (no L</rs> or L</max_sth> available,
+accordingly.  If it somehow cannot run a DB check (no L</rs> or L</max_stmt> available,
 for example), the last chunk will check all the way to C<$DB_MAX_ID>.
 
 This is useful if the entire table is expected to be processed, and you don't want to
@@ -509,7 +551,7 @@ if L</sleep> is enabled.
 If this needs to be disabled, set this to 0.  The maximum chunk percentage does not have
 a setting and is hard-coded at C<< 100% + min_chunk_percent >>.
 
-If DBIC processing isn't used, L</count_sth> is also required to enable chunk resizing.
+If DBIC processing isn't used, L</count_stmt> is also required to enable chunk resizing.
 
 =cut
 
@@ -741,13 +783,14 @@ sub construct_and_execute {
 =head2 calculate_ranges
 
     my $batch_chunker = DBIx::BatchChunker->new(
-        rsc     => $account_rsc,  # a ResultSetColumn
+        rsc      => $account_rsc,    # a ResultSetColumn
         ### OR ###
-        rs      => $account_rs,   # a ResultSet
-        id_name => 'account_id',  # can be looked up if not provided
+        rs       => $account_rs,     # a ResultSet
+        id_name  => 'account_id',    # can be looked up if not provided
         ### OR ###
-        min_sth => $min_sth,      # a DBI statement handle
-        max_sth => $max_sth,      # ditto
+        dbi_connector => $conn,      # DBIx::Connector::Retry object
+        min_stmt      => $min_stmt,  # a SQL statement or DBI $sth args
+        max_stmt      => $max_stmt,  # ditto
 
         ### Optional but recommended ###
         id_name      => 'account_id',  # will also be added into the progress bar title
@@ -762,7 +805,7 @@ sub construct_and_execute {
     my $has_data_to_process = $batch_chunker->calculate_ranges;
 
 Given a L<DBIx::Class::ResultSetColumn>, L<DBIx::Class::ResultSet>, or L<DBI> statement
-handle set, this method calculates the min/max IDs of those objects.  It fills in the
+argument set, this method calculates the min/max IDs of those objects.  It fills in the
 L</min_id> and L</max_id> attributes, based on the ID data, and then returns 1.
 
 If either of the min/max statements don't return any ID data, this method will return 0.
@@ -799,14 +842,18 @@ sub calculate_ranges {
         $progress->update(2);
     }
     else {
-        my ($min_sth, $max_sth) = ($self->min_sth, $self->max_sth);
-        $min_sth->execute;
-        ($min_id) = $min_sth->fetchrow_array;
-        $progress->update(1);
+        $self->dbi_connector->run(sub {
+            my $dbh = $_;
 
-        $max_sth->execute;
-        ($max_id) = $max_sth->fetchrow_array;
-        $progress->update(2);
+            # In case the sub is retried
+            $progress->update(0);
+
+            ($min_id) = $dbh->selectrow_array(@{ $self->min_stmt });
+            $progress->update(1);
+
+            ($max_id) = $dbh->selectrow_array(@{ $self->max_stmt });
+            $progress->update(2);
+        });
     }
 
     # Set the ranges and return
@@ -823,22 +870,24 @@ sub calculate_ranges {
     my $batch_chunker = DBIx::BatchChunker->new(
         # ...other attributes for calculate_ranges...
 
-        sth       => $do_sth,       # INSERT/UPDATE/DELETE $sth with BETWEEN placeholders
+        dbi_connector => $conn,          # DBIx::Connector::Retry object
+        stmt          => $do_stmt,       # INSERT/UPDATE/DELETE $stmt with BETWEEN placeholders
         ### OR ###
-        sth       => $select_sth,   # SELECT $sth with BETWEEN placeholders
-        count_sth => $count_sth,    # SELECT COUNT $sth to be used for min_chunk_percent; optional
-        coderef   => $coderef,      # called code that does the actual work
+        dbi_connector => $conn,          # DBIx::Connector::Retry object
+        stmt          => $select_stmt,   # SELECT $stmt with BETWEEN placeholders
+        count_stmt    => $count_stmt,    # SELECT COUNT $stmt to be used for min_chunk_percent; optional
+        coderef       => $coderef,       # called code that does the actual work
         ### OR ###
-        rs        => $account_rs,   # base ResultSet, which gets filtered with -between later on
-        id_name   => 'account_id',  # can be looked up if not provided
-        coderef   => $coderef,      # called code that does the actual work
+        rs      => $account_rs,          # base ResultSet, which gets filtered with -between later on
+        id_name => 'account_id',         # can be looked up if not provided
+        coderef => $coderef,             # called code that does the actual work
         ### OR ###
-        coderef   => $coderef,      # DIY database work; just pass the $start/$end IDs
+        coderef => $coderef,             # DIY database work; just pass the $start/$end IDs
 
         ### Optional but recommended ###
-        sleep             => 5,    # number of seconds to sleep each chunk; defaults to 0
+        sleep             => 0.25, # number of seconds to sleep each chunk; defaults to 0
         process_past_max  => 1,    # use this if processing the whole table
-        single_rows       => 1,    # does $coderef get a single $row or the whole $chunk_rs / $sth
+        single_rows       => 1,    # does $coderef get a single $row or the whole $chunk_rs / $stmt
         min_chunk_percent => 0.25, # minimum row count of chunk size percentage; defaults to 0.5 (or 50%)
         target_time       => 15,   # target runtime for dynamic chunk size scaling; default is off
 
@@ -1033,8 +1082,8 @@ sub _process_past_max_checker {
     return 1 unless $self->process_past_max;
     return 1 unless $ls->{end} > $self->max_id;
 
-    # No checks for DIY, if they didn't include a max_sth
-    unless ($self->rsc || $self->max_sth) {
+    # No checks for DIY, if they didn't include a max_stmt
+    unless ($self->rsc || $self->max_stmt) {
         # There's no way to size this, so skip past the max as one block
         $ls->{end} = $ls->{max_end};
         return 1;
@@ -1047,9 +1096,9 @@ sub _process_past_max_checker {
         $new_max_id = $rsc->max;
     }
     else {
-        my $max_sth = $self->max_sth;
-        $max_sth->execute;
-        ($new_max_id) = $max_sth->fetchrow_array;
+        ($new_max_id) = $self->dbi_connector->run(sub {
+            $_->selectrow_array(@{ $self->max_stmt });
+        });
     }
     $ls->{timer} = time;  # the above query shouldn't impact runtimes
 

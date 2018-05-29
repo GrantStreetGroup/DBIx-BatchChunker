@@ -85,9 +85,12 @@ $WriteMakefileArgs{META_MERGE}{no_index} = { directory => [qw< examples >] };
 # Other prereqs not in *_REQUIRES
 $WriteMakefileArgs{META_MERGE}{prereqs} = {
     runtime => {
-        # Even though we require it in the tests, this is still optional for the module
         suggests => {
+            # Even though we require it in the tests, this is still optional for the module
             'DBIx::Class' => 0,
+
+            # This is only "required" if DBI processing is used
+            'DBIx::Connector::Retry' => 0,
         },
     },
 };
