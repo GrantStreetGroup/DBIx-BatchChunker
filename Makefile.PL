@@ -75,6 +75,7 @@ my %WriteMakefileArgs = (
         'Scalar::Util'            => 0,
 
         'DBIx::Class' => 0,
+        'DBIx::Connector::Retry' => 0,
         'Path::Class' => 0,
     },
 );

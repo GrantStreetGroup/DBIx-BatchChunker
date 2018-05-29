@@ -25,8 +25,6 @@ my $schema       = CDTest->init_schema;
 my $track_rs     = $schema->resultset('Track')->search({ position => 1 });
 my $track1_count = $track_rs->count;
 
-my $dbh = $schema->storage->dbh;
-
 subtest 'DBIC Processing (+ process_past_max)' => sub {
     my $calls = 0;
 
@@ -101,130 +99,6 @@ subtest 'DBIC Processing + single_rows (+ rsc)' => sub {
     cmp_ok($calls, '==', $track1_count, 'Right number of calls');
 };
 
-subtest 'Active DBI Processing (+ sleep)' => sub {
-    my $calls = 0;
-
-    # can't exactly make it an "active" statement, but we can add a callback
-    my $sth = $dbh->prepare('SELECT ?, ?');
-    $sth->{Callbacks} = {
-        execute => sub { $calls++; return },  # DBI callback cannot return anything
-    };
-
-    # Constructor
-    my $batch_chunker = DBIx::BatchChunker->new(
-        chunk_size => $CHUNK_SIZE,
-
-        min_sth => $dbh->prepare('SELECT MIN(trackid) FROM track WHERE position = 1'),
-        max_sth => $dbh->prepare('SELECT MAX(trackid) FROM track WHERE position = 1'),
-        sth     => $sth,
-
-        target_time => 0,
-        sleep       => 0.1,
-    );
-
-    # Calculate
-    ok($batch_chunker->calculate_ranges, 'calculate_ranges ok');
-    ok($batch_chunker->min_id,           'min_id ok');
-    ok($batch_chunker->max_id,           'max_id ok');
-
-    my $range = $batch_chunker->max_id - $batch_chunker->min_id + 1;
-    my $multiplier_range = ceil($range / $CHUNK_SIZE);
-
-    # Process
-    my $start_time = time;
-    $batch_chunker->execute;
-    my $total_time = time - $start_time;
-    cmp_ok($calls,      '==', $multiplier_range,       'Right number of calls');
-    cmp_ok($total_time, '>=', $multiplier_range * 0.1, 'Slept ok');
-    cmp_ok($total_time, '<',  $multiplier_range * 0.5, 'Did not oversleep');
-};
-
-subtest 'Query DBI Processing (+ min_chunk_percent)' => sub {
-    my $calls     = 0;
-    my $max_range = 0;
-
-    # Constructor
-    my $batch_chunker = DBIx::BatchChunker->new(
-        chunk_size => $CHUNK_SIZE,
-
-        min_sth   => $dbh->prepare('SELECT MIN(trackid)   FROM track WHERE position = 1'),
-        max_sth   => $dbh->prepare('SELECT MAX(trackid)   FROM track WHERE position = 1'),
-        sth       => $dbh->prepare('SELECT trackid        FROM track WHERE position = 1 AND trackid BETWEEN ? AND ?'),
-        count_sth => $dbh->prepare('SELECT COUNT(trackid) FROM track WHERE position = 1 AND trackid BETWEEN ? AND ?'),
-        coderef   => sub {
-            my ($bc, $sth) = @_;
-            isa_ok($sth, ['DBI::st'], '$sth');
-            $calls++;
-
-            my $ls     = $bc->_loop_state;
-            my $range  = $ls->{end} - $ls->{start} + 1;
-            $max_range = $range if $range > $max_range;
-            note explain $ls if $BATCHCHUNK_TEST_DEBUG;
-        },
-
-        target_time       => 0,
-        # any missing row in a standard sized chunk will trigger an expansion
-        min_chunk_percent => sprintf("%.2f",
-            ($CHUNK_SIZE - 1) / $CHUNK_SIZE
-        ) + 0.01,
-    );
-
-    # Calculate
-    ok($batch_chunker->calculate_ranges, 'calculate_ranges ok');
-    ok($batch_chunker->min_id,           'min_id ok');
-    ok($batch_chunker->max_id,           'max_id ok');
-
-    my $range = $batch_chunker->max_id - $batch_chunker->min_id + 1;
-    my $multiplier_range = ceil($range / $CHUNK_SIZE);
-
-    # Process
-    $batch_chunker->execute;
-    cmp_ok($calls,      '<', $multiplier_range, 'Fewer coderef calls than normal');
-    cmp_ok($max_range,  '>', $CHUNK_SIZE,       'Expanded chunk at least once');
-};
-
-subtest 'Query DBI Processing + single_row (+ rsc)' => sub {
-    my $calls = 0;
-
-    # Constructor
-    my $batch_chunker = DBIx::BatchChunker->new(
-        chunk_size => $CHUNK_SIZE,
-
-        ### NOTE: This mixing of DBI/C is unconventional, but still acceptable
-        rsc       => $track_rs->get_column('trackid'),
-        sth       => $dbh->prepare('SELECT *              FROM track WHERE position = 1 AND trackid BETWEEN ? AND ?'),
-        count_sth => $dbh->prepare('SELECT COUNT(trackid) FROM track WHERE position = 1 AND trackid BETWEEN ? AND ?'),
-
-        coderef => sub {
-            my ($bc, $row) = @_;
-            like($row, {
-                trackid  => qr/[0-9]+/,
-                cd       => qr/[0-9]+/,
-                position => 1,
-                title    => qr/\w+/,
-            }, '$row + keys');
-            $calls++;
-
-            if ($BATCHCHUNK_TEST_DEBUG) {
-                note explain $bc->_loop_state;
-                note explain $row;
-            }
-        },
-
-        single_rows => 1,
-        target_time => 0,
-    );
-
-    # Calculate
-    ok($batch_chunker->calculate_ranges, 'calculate_ranges ok');
-    ok($batch_chunker->min_id,           'min_id ok');
-    ok($batch_chunker->max_id,           'max_id ok');
-
-    # Process
-    $batch_chunker->execute;
-    cmp_ok($calls, '==', $track1_count, 'Right number of calls');
-};
-
 subtest 'DIY Processing (+ process_past_max)' => sub {
     my $calls = 0;
     my $max_range = 0;
@@ -258,50 +132,6 @@ subtest 'DIY Processing (+ process_past_max)' => sub {
     my $right_calls = ceil( ($range + 1) / $CHUNK_SIZE);  # see PPM note on the first subtest
     $batch_chunker->execute;
     cmp_ok($calls, '==', $right_calls, 'Right number of calls');
-};
-
-subtest 'DIY Processing (+ min_chunk_percent)' => sub {
-    my $calls = 0;
-    my $max_range = 0;
-
-    # Constructor
-    my $batch_chunker = DBIx::BatchChunker->new(
-        chunk_size => $CHUNK_SIZE,
-
-        min_sth   => $dbh->prepare('SELECT MIN(trackid)   FROM track WHERE position = 1'),
-        max_sth   => $dbh->prepare('SELECT MAX(trackid)   FROM track WHERE position = 1'),
-        count_sth => $dbh->prepare('SELECT COUNT(trackid) FROM track WHERE position = 1 AND trackid BETWEEN ? AND ?'),
-        coderef   => sub {
-            my ($bc, $start, $end) = @_;
-            ok(looks_like_number $start,  '$start is a number');
-            ok(looks_like_number $end,    '$end   is a number');
-            $calls++;
-
-            my $ls     = $bc->_loop_state;
-            my $range  = $ls->{end} - $ls->{start} + 1;
-            $max_range = $range if $range > $max_range;
-            note explain $ls if $BATCHCHUNK_TEST_DEBUG;
-        },
-
-        target_time       => 0,
-        # any missing row in a standard sized chunk will trigger an expansion
-        min_chunk_percent => sprintf("%.2f",
-            ($CHUNK_SIZE - 1) / $CHUNK_SIZE
-        ) + 0.01,
-    );
-
-    # Calculate
-    ok($batch_chunker->calculate_ranges, 'calculate_ranges ok');
-    ok($batch_chunker->min_id,           'min_id ok');
-    ok($batch_chunker->max_id,           'max_id ok');
-
-    my $range = $batch_chunker->max_id - $batch_chunker->min_id + 1;
-    my $multiplier_range = ceil($range / $CHUNK_SIZE);
-
-    # Process
-    $batch_chunker->execute;
-    cmp_ok($calls,      '<', $multiplier_range, 'Fewer coderef calls than normal');
-    cmp_ok($max_range,  '>', $CHUNK_SIZE,       'Expanded chunk at least once');
 };
 
 subtest 'process_past_max + min_chunk_percent' => sub {
@@ -463,62 +293,6 @@ subtest 'Runtime targeting (too slow)' => sub {
     cmp_ok($calls,    '==', $right_calls,      'Right coderef calls');
     cmp_ok($min_time, '>',  0.05,              'Always exceeded target time');
     cmp_ok($min_size, '==', 1,                 'Right chunk size');
-};
-
-subtest 'Errors' => sub {
-    like(
-        dies {
-            DBIx::BatchChunker->new->calculate_ranges;
-        },
-        qr/Need at least a/,
-        'calculate_ranges dies with no parameters'
-    );
-
-    like(
-        dies {
-            DBIx::BatchChunker->new(
-                min_sth => $dbh->prepare('SELECT 1'),
-            )->calculate_ranges;
-        },
-        qr/Need at least a/,
-        'calculate_ranges dies with min_sth + no max_sth',
-    );
-
-    like(
-        dies {
-            DBIx::BatchChunker->new->execute;
-        },
-        qr/Need at least a/,
-        'execute dies with no parameters',
-    );
-
-    like(
-        dies {
-            DBIx::BatchChunker->new(
-                rs => $track_rs,
-            )->execute;
-        },
-        qr/Need at least a/,
-        'execute dies with rs + no coderef',
-    );
-
-    ok(
-        lives {
-            DBIx::BatchChunker->new(
-                rs      => $track_rs,
-                coderef => sub {},
-            )->execute;
-        },
-        'execute lives even without min/max calculations',
-    );
-
-    like(
-        dies {
-            DBIx::BatchChunker->construct_and_execute;
-        },
-        qr/Need at least a/,
-        'construct_and_execute dies with no parameters',
-    );
 };
 
 ############################################################
