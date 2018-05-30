@@ -107,6 +107,11 @@ If L</single_rows> is also enabled, then each chunk is wrapped in a transaction 
 coderef is called for each row in the chunk.  In this case, the coderef is passed a
 Result object instead of the chunk ResultSet.
 
+Note that whether L</single_rows> is enabled or not, the coderef execution is encapsulated
+in DBIC's retry logic, so any failures will re-connect and retry the coderef.  Because of
+this, any changes you make within the coderef should be idempotant, or should at least be
+able to skip over any already-processed rows.
+
 =head3 Active DBI Processing
 
 If an L</stmt> (DBI statement handle args) is passed without a L</coderef>, the statement
@@ -200,6 +205,65 @@ has rsc => (
     isa       => InstanceOf['DBIx::Class::ResultSetColumn'],
     required  => 0,
 );
+
+=head3 dbic_retry_opts
+
+A hashref of DBIC retry options.  These options control how retry protection works within
+DBIC.  So far, there are two supported options:
+
+    max_attempts  = Number of times to retry
+    retry_handler = Coderef that returns true to continue to retry or false to re-throw
+                    the last exception
+
+The default is to use DBIC's built-in retry options, the same way L<DBIx::Class::Storage::DBI/dbh_do>
+does it, which will retry once if the DB connection was disconnected.  If you specify any
+options, even a blank hashref, BatchChunker will fill in a default C<max_attempts> of 10,
+and an always-true C<retry_handler>.  This is similar to L<DBIx::Connector::Retry>'s
+defaults.
+
+Under the hood, these are options that are passed to the as-yet-undocumented
+L<DBIx::Class::Storage::BlockRunner>.  The C<retry_handler> has access to the same
+BlockRunner object (passed as its only argument) and its methods/accessors, such as C<storage>,
+C<failed_attempt_count>, and C<last_exception>.
+
+=cut
+
+has dbic_retry_opts => (
+    is       => 'ro',
+    isa      => HashRef,
+    required => 0,
+    lazy     => 1,
+    builder  => 1,
+);
+
+sub _build_dbic_retry_opts {
+    my $self = shift;
+
+    return {
+        # the default from DBIC
+        retry_handler => sub {
+            $_[0]->failed_attempt_count == 1 && !$_[0]->storage->connected
+        },
+    };
+}
+
+sub _dbic_block_runner {
+    my ($self, $rs, $method, $coderef) = @_;
+
+    # A very light wrapper around BlockRunner.  No need to load BlockRunner, since DBIC
+    # loads it in before us if we're using this method.
+    DBIx::Class::Storage::BlockRunner->new(
+        # in case they are not defined with a custom dbic_retry_opts
+        max_attempts  => 10,
+        retry_handler => sub { 1 },
+
+        # never overrides the important ones below
+        %{ $self->dbic_retry_opts },
+
+        storage  => $rs->result_source->storage,
+        wrap_txn => ($method eq 'txn' ? 1 : 0),
+    )->run($coderef);
+}
 
 =head2 DBI Processing Attributes
 
@@ -895,11 +959,17 @@ sub calculate_ranges {
 
     # Actually run the statements
     my ($min_id, $max_id);
-    if (my $rsc = $self->rsc) {
-        $min_id = $rsc->min;
-        $progress->update(1);
-        $max_id = $rsc->max;
-        $progress->update(2);
+    if ($self->rsc) {
+        $self->_dbic_block_runner( $self->rsc->_resultset => run => sub {
+            # In case the sub is retried
+            $progress->update(0);
+
+            $min_id = $self->rsc->min;
+            $progress->update(1);
+
+            $max_id = $self->rsc->max;
+            $progress->update(2);
+        });
     }
     else {
         $self->dbi_connector->run(sub {
@@ -1079,10 +1149,15 @@ sub _process_block {
             $self->id_name => { -between => [@$ls{qw< start end >}] },
         });
 
-        $ls->{chunk_count} = $chunk_rs->count;
+        $self->_dbic_block_runner( $rs => run => sub {
+            $self->_loop_state->{chunk_count} = $chunk_rs->count;
+        });
     }
 
     return unless $self->_chunk_count_checker;
+
+    # NOTE: Try to minimize the amount of closures by using $self as much as possible
+    # inside coderefs.
 
     # Do the work
     if (my $stmt = $self->stmt) {
@@ -1092,8 +1167,6 @@ sub _process_block {
             (@$stmt > 2 ? @$stmt[2..$#$stmt] : ()),
             @$ls{qw< start end >},
         );
-
-        # NOTE: Try to minimize the amount of closures by using $self as much as possible.
 
         if ($self->single_rows && $coderef) {
             # Transactional work
@@ -1118,18 +1191,28 @@ sub _process_block {
             });
         }
     }
-    elsif ($self->rs && $coderef) {
+    elsif ($rs && $coderef) {
         ### ResultSet with coderef
 
         if ($self->single_rows) {
             # Transactional work
-            $rs->result_source->schema->txn_do( sub {
+            $self->_dbic_block_runner( $rs => txn => sub {
+                # reset timer/$rs on retries
+                $self->_loop_state->{timer} = time;
+                $chunk_rs->reset;
+
                 while (my $row = $chunk_rs->next) { $self->coderef->($self, $row) }
             });
         }
         else {
             # Bulk work
-            $self->coderef->($self, $chunk_rs);
+            $self->_dbic_block_runner( $rs => run => sub {
+                # reset timer/$rs on retries
+                $self->_loop_state->{timer} = time;
+                $chunk_rs->reset;
+
+                $self->coderef->($self, $chunk_rs);
+            });
         }
     }
     else {
@@ -1169,7 +1252,9 @@ sub _process_past_max_checker {
     $progress->message('Reached end; re-checking max ID') if $self->debug;
     my $new_max_id;
     if (my $rsc = $self->rsc) {
-        $new_max_id = $rsc->max;
+        $self->_dbic_block_runner( $self->rsc->_resultset => run => sub {
+            $new_max_id = $rsc->max;
+        });
     }
     else {
         ($new_max_id) = $self->dbi_connector->run(sub {

@@ -295,6 +295,76 @@ subtest 'Runtime targeting (too slow)' => sub {
     cmp_ok($min_size, '==', 1,                 'Right chunk size');
 };
 
+subtest 'Retry testing' => sub {
+    my $calls = 0;
+
+    # Constructor
+    my $batch_chunker = DBIx::BatchChunker->new(
+        chunk_size => $CHUNK_SIZE,
+
+        rs          => $track_rs,
+        coderef     => sub {
+            my ($bc, $rs) = @_;
+            isa_ok($rs, ['DBIx::Class::ResultSet'], '$rs');
+            note explain $bc->_loop_state if $BATCHCHUNK_TEST_DEBUG;
+            $calls++;
+            die "Don't wanna process right now" if $calls % 3;  # fail 2/3rds of the calls
+        },
+
+        dbic_retry_opts   => {},  # non-DBIC "defaults"
+        min_chunk_percent => 0,
+        target_time       => 0,
+    );
+
+    # Calculate
+    ok($batch_chunker->calculate_ranges, 'calculate_ranges ok');
+    ok($batch_chunker->min_id,           'min_id ok');
+    ok($batch_chunker->max_id,           'max_id ok');
+
+    my $range = $batch_chunker->max_id - $batch_chunker->min_id + 1;
+    my $multiplier_range = ceil($range / $CHUNK_SIZE);
+
+    # Process
+    $batch_chunker->execute;
+    cmp_ok($calls, '==', $multiplier_range * 3, 'Right number of calls');
+};
+
+subtest 'Retry testing + single_rows' => sub {
+    my $calls = 0;
+
+    # Constructor
+    my $batch_chunker = DBIx::BatchChunker->new(
+        chunk_size => $CHUNK_SIZE,
+
+        rs          => $track_rs,
+        coderef     => sub {
+            my ($bc, $result) = @_;
+            isa_ok($result, ['DBIx::Class::Row'], '$result');
+            note explain $bc->_loop_state if $BATCHCHUNK_TEST_DEBUG;
+            $calls++;
+            # fail one of the rows, which will restart the whole chunk
+            die "Don't wanna process right now" unless $calls % ($CHUNK_SIZE + 1);
+        },
+
+        dbic_retry_opts   => {},  # non-DBIC "defaults"
+        single_rows       => 1,
+        min_chunk_percent => 0,
+        target_time       => 0,
+    );
+
+    # Calculate
+    ok($batch_chunker->calculate_ranges, 'calculate_ranges ok');
+    ok($batch_chunker->min_id,           'min_id ok');
+    ok($batch_chunker->max_id,           'max_id ok');
+
+    # This isn't exact, but it's close enough for a >= compare
+    my $rightish_calls = $track1_count + ceil($track1_count / $CHUNK_SIZE) - 1;
+
+    # Process
+    $batch_chunker->execute;
+    cmp_ok($calls, '>=', $rightish_calls, 'Rightish number of calls');
+};
+
 ############################################################
 
 done_testing;
