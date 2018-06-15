@@ -1,12 +1,14 @@
-CHANGES
 examples/basic.pl
 lib/DBIx/BatchChunker.pm
-LICENSE
 Makefile.PL
 MANIFEST			This list of files
 README
-README.md
+t/construct.t
 t/dbh-dbic.t
+t/dbh-dbic_storage.t
+t/dbh-legacy.t
+t/dbh.t
+t/dbic.t
 t/lib/CDTest.pm
 t/lib/CDTest/Schema.pm
 t/lib/CDTest/Schema/Result/Artist.pm
@@ -27,3 +29,10 @@ t/lib/CDTest/Schema/Result/Tag.pm
 t/lib/CDTest/Schema/Result/Track.pm
 t/lib/CDTest/Schema/Result/Year2000CD.pm
 t/lib/sqlite.sql
+xt/boilerplate.t
+xt/changes.t
+xt/compiles.t
+xt/pod-coverage.t
+xt/pod.t
+xt/strict.t
+xt/version.t
