@@ -248,7 +248,7 @@ sub _build_dbic_retry_opts {
 }
 
 sub _dbic_block_runner {
-    my ($self, $rs, $method, $coderef) = @_;
+    my ($self, $method, $coderef) = @_;
 
     # A very light wrapper around BlockRunner.  No need to load BlockRunner, since DBIC
     # loads it in before us if we're using this method.
@@ -260,7 +260,7 @@ sub _dbic_block_runner {
         # never overrides the important ones below
         %{ $self->dbic_retry_opts },
 
-        storage  => $rs->result_source->storage,
+        storage  => $self->dbic_storage,
         wrap_txn => ($method eq 'txn' ? 1 : 0),
     )->run($coderef);
 }
@@ -273,13 +273,32 @@ A L<DBIx::Connector::Retry> object.  Instead of L<DBI> statement handles, this i
 recommended way for BatchChunker to interface with the DBI, as it handles retries on
 failures.  The connection mode used is whatever default is set within the object.
 
-Required for DBI Processing.
+Required for DBI Processing, unless L</dbic_storage> is specified.
 
 =cut
 
 has dbi_connector => (
     is       => 'ro',
     isa      => InstanceOf['DBIx::Connector::Retry'],
+    required => 0,
+);
+
+=head3 dbic_storage
+
+A DBIC storage object, as an alternative for L</dbi_connector>.  There may be times when
+you want to run plain DBI statements, but are still using DBIC.  In these cases, you
+don't have to create a L<DBIx::Connector::Retry> object to run those statements.
+
+This uses a BlockRunner object for retry protection, so the options in
+L</dbic_retry_opts> would apply here.
+
+Required for DBI Processing, unless L</dbi_connector> is specified.
+
+=cut
+
+has dbic_storage => (
+    is       => 'ro',
+    isa      => InstanceOf['DBIx::Class::Storage::DBI'],
     required => 0,
 );
 
@@ -797,6 +816,12 @@ around BUILDARGS => sub {
         $args{id_name} = ($rs->result_source->primary_columns)[0];
         $args{rsc}     = $rs->get_column( $args{id_name} );
     }
+    $rsc = $args{rsc};
+
+    # Auto-add dbic_storage, if available
+    if (!$args{dbic_storage} && ($rs || $rsc)) {
+        $args{dbic_storage} = $rs ? $rs->result_source->storage : $rsc->_resultset->result_source->storage;
+    }
 
     # Find something to use as a dbi_connector, if it doesn't already exist
     my @old_attrs = qw< sth min_sth max_sth count_sth >;
@@ -850,17 +875,18 @@ around BUILDARGS => sub {
     }
 
     # Now check to make sure dbi_connector is available for DBI processing
-    die 'DBI processing requires a dbi_connector attribute!' if !$args{dbi_connector} && (
-        first { $args{$_} } @new_attrs
+    die 'DBI processing requires a dbi_connector or dbic_storage attribute!' if (
+        !($args{dbi_connector} || $args{dbic_storage}) &&
+        (first { $args{$_} } @new_attrs)
     );
 
     # Other sanity checks
-    die 'Range calculations requires one of these attr sets: rsc, rs, or dbi_connector + min_stmt + max_stmt' unless (
+    die 'Range calculations requires one of these attr sets: rsc, rs, or dbi_connector|dbic_storage + min_stmt + max_stmt' unless (
         $args{rsc} ||
         ($args{min_stmt} && $args{max_stmt})
     );
 
-    die 'Block execution requires one of these attr sets: dbi_connector + stmt, rs + coderef, or coderef' unless (
+    die 'Block execution requires one of these attr sets: dbi_connector|dbic_storage + stmt, rs + coderef, or coderef' unless (
         $args{stmt} ||
         ($args{rs} && $args{coderef}) ||
         $args{coderef}
@@ -960,7 +986,7 @@ sub calculate_ranges {
     # Actually run the statements
     my ($min_id, $max_id);
     if ($self->rsc) {
-        $self->_dbic_block_runner( $self->rsc->_resultset => run => sub {
+        $self->_dbic_block_runner( run => sub {
             # In case the sub is retried
             $progress->update(0);
 
@@ -968,6 +994,20 @@ sub calculate_ranges {
             $progress->update(1);
 
             $max_id = $self->rsc->max;
+            $progress->update(2);
+        });
+    }
+    elsif ($self->dbic_storage) {
+        $self->_dbic_block_runner( run => sub {
+            my $dbh = $self->dbic_storage->dbh;
+
+            # In case the sub is retried
+            $progress->update(0);
+
+            ($min_id) = $dbh->selectrow_array(@{ $self->min_stmt });
+            $progress->update(1);
+
+            ($max_id) = $dbh->selectrow_array(@{ $self->max_stmt });
             $progress->update(2);
         });
     }
@@ -1135,7 +1175,17 @@ sub _process_block {
 
     # Figure out if the row count is worth the work
     my $chunk_rs;
-    if (my $count_stmt = $self->count_stmt) {
+    my $count_stmt = $self->count_stmt;
+    if ($count_stmt && $self->dbic_storage) {
+        $self->_dbic_block_runner( run => sub {
+            ($self->_loop_state->{chunk_count}) = $self->dbic_storage->dbh->selectrow_array(
+                @$count_stmt,
+                (@$count_stmt == 1 ? undef : ()),
+                @$ls{qw< start end >},
+            );
+        });
+    }
+    elsif ($count_stmt) {
         ($ls->{chunk_count}) = $conn->run(sub {
             $_->selectrow_array(
                 @$count_stmt,
@@ -1149,7 +1199,7 @@ sub _process_block {
             $self->id_name => { -between => [@$ls{qw< start end >}] },
         });
 
-        $self->_dbic_block_runner( $rs => run => sub {
+        $self->_dbic_block_runner( run => sub {
             $self->_loop_state->{chunk_count} = $chunk_rs->count;
         });
     }
@@ -1170,25 +1220,49 @@ sub _process_block {
 
         if ($self->single_rows && $coderef) {
             # Transactional work
-            $conn->txn(sub {
-                $self->_loop_state->{timer} = time;  # reset timer on retries
+            if ($self->dbic_storage) {
+                $self->_dbic_block_runner( txn => sub {
+                    $self->_loop_state->{timer} = time;  # reset timer on retries
 
-                my $sth = $_->prepare(@prepare_args);
-                $sth->execute(@execute_args);
+                    my $sth = $self->dbic_storage->dbh->prepare(@prepare_args);
+                    $sth->execute(@execute_args);
 
-                while (my $row = $sth->fetchrow_hashref('NAME_lc')) { $self->coderef->($self, $row) }
-            });
+                    while (my $row = $sth->fetchrow_hashref('NAME_lc')) { $self->coderef->($self, $row) }
+                });
+            }
+            else {
+                $conn->txn(sub {
+                    $self->_loop_state->{timer} = time;  # reset timer on retries
+
+                    my $sth = $_->prepare(@prepare_args);
+                    $sth->execute(@execute_args);
+
+                    while (my $row = $sth->fetchrow_hashref('NAME_lc')) { $self->coderef->($self, $row) }
+                });
+            }
         }
         else {
             # Bulk work (or DML)
-            $conn->run(sub {
-                $self->_loop_state->{timer} = time;  # reset timer on retries
+            if ($self->dbic_storage) {
+                $self->_dbic_block_runner( run => sub {
+                    $self->_loop_state->{timer} = time;  # reset timer on retries
 
-                my $sth = $_->prepare(@prepare_args);
-                $sth->execute(@execute_args);
+                    my $sth = $self->dbic_storage->dbh->prepare(@prepare_args);
+                    $sth->execute(@execute_args);
 
-                $self->coderef->($self, $sth) if $self->coderef;
-            });
+                    $self->coderef->($self, $sth) if $self->coderef;
+                });
+            }
+            else {
+                $conn->run(sub {
+                    $self->_loop_state->{timer} = time;  # reset timer on retries
+
+                    my $sth = $_->prepare(@prepare_args);
+                    $sth->execute(@execute_args);
+
+                    $self->coderef->($self, $sth) if $self->coderef;
+                });
+            }
         }
     }
     elsif ($rs && $coderef) {
@@ -1196,7 +1270,7 @@ sub _process_block {
 
         if ($self->single_rows) {
             # Transactional work
-            $self->_dbic_block_runner( $rs => txn => sub {
+            $self->_dbic_block_runner( txn => sub {
                 # reset timer/$rs on retries
                 $self->_loop_state->{timer} = time;
                 $chunk_rs->reset;
@@ -1206,7 +1280,7 @@ sub _process_block {
         }
         else {
             # Bulk work
-            $self->_dbic_block_runner( $rs => run => sub {
+            $self->_dbic_block_runner( run => sub {
                 # reset timer/$rs on retries
                 $self->_loop_state->{timer} = time;
                 $chunk_rs->reset;
@@ -1252,8 +1326,13 @@ sub _process_past_max_checker {
     $progress->message('Reached end; re-checking max ID') if $self->debug;
     my $new_max_id;
     if (my $rsc = $self->rsc) {
-        $self->_dbic_block_runner( $self->rsc->_resultset => run => sub {
+        $self->_dbic_block_runner( run => sub {
             $new_max_id = $rsc->max;
+        });
+    }
+    elsif ($self->dbic_storage) {
+        $self->_dbic_block_runner( run => sub {
+            ($new_max_id) = $self->dbic_storage->dbh->selectrow_array(@{ $self->max_stmt });
         });
     }
     else {
