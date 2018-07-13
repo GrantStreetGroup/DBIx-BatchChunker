@@ -4,7 +4,7 @@ DBIx::BatchChunker - Run large database changes safely
 
 # VERSION
 
-version 0.91
+version 0.92
 
 # SYNOPSIS
 
@@ -83,15 +83,20 @@ If ["single\_rows"](#single_rows) is also enabled, then each chunk is wrapped in
 coderef is called for each row in the chunk.  In this case, the coderef is passed a
 Result object instead of the chunk ResultSet.
 
+Note that whether ["single\_rows"](#single_rows) is enabled or not, the coderef execution is encapsulated
+in DBIC's retry logic, so any failures will re-connect and retry the coderef.  Because of
+this, any changes you make within the coderef should be idempotant, or should at least be
+able to skip over any already-processed rows.
+
 ### Active DBI Processing
 
-If an ["sth"](#sth) (DBI statement handle object) is passed without a ["coderef"](#coderef), the statement
+If an ["stmt"](#stmt) (DBI statement handle args) is passed without a ["coderef"](#coderef), the statement
 handle is merely executed on each iteration with the start and end IDs.  It is assumed
 that the SQL for the statement handle contains exactly two placeholders for a `BETWEEN`
 clause.  For example:
 
 ```perl
-my $update_sth = $dbh->prepare_cached(q{
+my $update_stmt = q{
 UPDATE
     accounts a
     JOIN account_updates au USING (account_id)
@@ -105,34 +110,47 @@ WHERE
 
 The `BETWEEN` clause should, of course, match the IDs being used in the loop.
 
+The statement is ran with ["dbi\_connector"](#dbi_connector) for retry protection.  Therefore, the
+statement should also be idempotant.
+
 ### Query DBI Processing
 
-If both a ["sth"](#sth) and a ["coderef"](#coderef) are passed, the statement handle is executed.  Like
-the ["Active DBI Processing"](#active-dbi-processing) mode, the SQL for the statement handle should contain
-exactly two placeholders for a `BETWEEN` clause.  Then the `$sth` is passed to the
-coderef.  It's up to the coderef to extract data from the executed statement handle, and
-do something with it.
+If both a ["stmt"](#stmt) and a ["coderef"](#coderef) are passed, the statement handle is prepared and
+executed.  Like the ["Active DBI Processing"](#active-dbi-processing) mode, the SQL for the statement should
+contain exactly two placeholders for a `BETWEEN` clause.  Then the `$sth` is passed to
+the coderef.  It's up to the coderef to extract data from the executed statement handle,
+and do something with it.
 
 If `single_rows` is enabled, each chunk is wrapped in a transaction and the coderef is
 called for each row in the chunk.  In this case, the coderef is passed a hashref of the
 row instead of the executed `$sth`, with lowercase alias names used as keys.
 
+Note that in both cases, the coderef execution is encapsulated in a [DBIx::Connector::Retry](https://metacpan.org/pod/DBIx::Connector::Retry)
+call to either `run` or `txn` (using ["dbi\_connector"](#dbi_connector)), so any failures will
+re-connect and retry the coderef.  Because of this, any changes you make within the
+coderef should be idempotant, or should at least be able to skip over any
+already-processed rows.
+
 ### DIY Processing
 
-If a ["coderef"](#coderef) is passed but neither a `sth` nor a `rs` are passed, then the
+If a ["coderef"](#coderef) is passed but neither a `stmt` nor a `rs` are passed, then the
 multiplier loop does not touch the database.  The coderef is merely passed the start and
 end IDs for each chunk.  It is expected that the coderef will run through all database
 operations using those start and end points.
 
+It's still valid to include ["min\_stmt"](#min_stmt), ["max\_stmt"](#max_stmt), and/or ["count\_stmt"](#count_stmt) in the
+constructor to enable features like [max ID recalculation](#process_past_max) or
+[chunk resizing](#min_chunk_percent).
+
 ### TL;DR Version
 
 ```perl
-$sth                             = Active DBI Processing
-$sth + $coderef                  = Query DBI Processing  | $bc->$coderef($executed_sth)
-$sth + $coderef + single_rows=>1 = Query DBI Processing  | $bc->$coderef($row_hashref)
-$rs  + $coderef                  = DBIC Processing       | $bc->$coderef($chunk_rs)
-$rs  + $coderef + single_rows=>1 = DBIC Processing       | $bc->$coderef($result)
-       $coderef                  = DIY Processing        | $bc->$coderef($start, $end)
+$stmt                             = Active DBI Processing
+$stmt + $coderef                  = Query DBI Processing  | $bc->$coderef($executed_sth)
+$stmt + $coderef + single_rows=>1 = Query DBI Processing  | $bc->$coderef($row_hashref)
+$rs   + $coderef                  = DBIC Processing       | $bc->$coderef($chunk_rs)
+$rs   + $coderef + single_rows=>1 = DBIC Processing       | $bc->$coderef($result)
+        $coderef                  = DIY Processing        | $bc->$coderef($start, $end)
 ```
 
 # ATTRIBUTES
@@ -152,34 +170,80 @@ the DB changes will be applied.  Required for DBIC processing.
 A [DBIx::Class::ResultSetColumn](https://metacpan.org/pod/DBIx::Class::ResultSetColumn). This is only used to override ["rs"](#rs) for min/max
 calculations.  Optional.
 
+### dbic\_retry\_opts
+
+A hashref of DBIC retry options.  These options control how retry protection works within
+DBIC.  So far, there are two supported options:
+
+```
+max_attempts  = Number of times to retry
+retry_handler = Coderef that returns true to continue to retry or false to re-throw
+                the last exception
+```
+
+The default is to use DBIC's built-in retry options, the same way ["dbh\_do" in DBIx::Class::Storage::DBI](https://metacpan.org/pod/DBIx::Class::Storage::DBI#dbh_do)
+does it, which will retry once if the DB connection was disconnected.  If you specify any
+options, even a blank hashref, BatchChunker will fill in a default `max_attempts` of 10,
+and an always-true `retry_handler`.  This is similar to [DBIx::Connector::Retry](https://metacpan.org/pod/DBIx::Connector::Retry)'s
+defaults.
+
+Under the hood, these are options that are passed to the as-yet-undocumented
+[DBIx::Class::Storage::BlockRunner](https://metacpan.org/pod/DBIx::Class::Storage::BlockRunner).  The `retry_handler` has access to the same
+BlockRunner object (passed as its only argument) and its methods/accessors, such as `storage`,
+`failed_attempt_count`, and `last_exception`.
+
 ## DBI Processing Attributes
 
-### min\_sth
+### dbi\_connector
 
-### max\_sth
+A [DBIx::Connector::Retry](https://metacpan.org/pod/DBIx::Connector::Retry) object.  Instead of [DBI](https://metacpan.org/pod/DBI) statement handles, this is the
+recommended way for BatchChunker to interface with the DBI, as it handles retries on
+failures.  The connection mode used is whatever default is set within the object.
 
-[DBI](https://metacpan.org/pod/DBI) statement handles.  When executed, these statements should each return a single
-value (to be used by ["fetchrow\_array" in DBI](https://metacpan.org/pod/DBI#fetchrow_array)), either the minimum or maximum ID that will be
-affected by the DB changes.  These are used by ["calculate\_ranges"](#calculate_ranges).  Required if using
-either type of DBI Processing.
+Required for DBI Processing, unless ["dbic\_storage"](#dbic_storage) is specified.
 
-### sth
+### dbic\_storage
+
+A DBIC storage object, as an alternative for ["dbi\_connector"](#dbi_connector).  There may be times when
+you want to run plain DBI statements, but are still using DBIC.  In these cases, you
+don't have to create a [DBIx::Connector::Retry](https://metacpan.org/pod/DBIx::Connector::Retry) object to run those statements.
+
+This uses a BlockRunner object for retry protection, so the options in
+["dbic\_retry\_opts"](#dbic_retry_opts) would apply here.
+
+Required for DBI Processing, unless ["dbi\_connector"](#dbi_connector) is specified.
+
+### min\_stmt
+
+### max\_stmt
+
+SQL statement strings or an arrayref of parameters for ["selectrow\_array" in DBI](https://metacpan.org/pod/DBI#selectrow_array).
+
+When executed, these statements should each return a single value, either the minimum or
+maximum ID that will be affected by the DB changes.  These are used by
+["calculate\_ranges"](#calculate_ranges).  Required if using either type of DBI Processing.
+
+### stmt
+
+A SQL statement string or an arrayref of parameters for ["prepare" in DBI](https://metacpan.org/pod/DBI#prepare) + binds.
 
 If using ["Active DBI Processing"](#active-dbi-processing) (no coderef), this is a [do-able](https://metacpan.org/pod/DBI#do) statement
-handle (usually DML like `INSERT/UPDATE/DELETE`).  If using ["Query DBI Processing"](#query-dbi-processing)
-(with coderef), this is a passive DQL (`SELECT`) statement handle.
+(usually DML like `INSERT/UPDATE/DELETE`).  If using ["Query DBI Processing"](#query-dbi-processing) (with
+coderef), this is a passive DQL (`SELECT`) statement.
 
-In either case, the statement should contain `BETWEEN` placeholders (one for the
-beginning and one for the end of the range), as it will be executed with the start/end ID
-points.
+In either case, the statement should contain `BETWEEN` placeholders, which will be
+executed with the start/end ID points.  If there are already bind placeholders in the
+arrayref, then make sure the `BETWEEN` bind points are last on the list.
 
 Required for DBI Processing.
 
-### count\_sth
+### count\_stmt
 
-A `SELECT COUNT` statement handle.  Like ["sth"](#sth), it should contain `BETWEEN`
-placeholders.  In fact, the SQL should look exactly like the ["sth"](#sth) query, except with
-`COUNT(*)` instead of the column list.
+A `SELECT COUNT` SQL statement string or an arrayref of parameters for
+["selectrow\_array" in DBI](https://metacpan.org/pod/DBI#selectrow_array).
+
+Like ["stmt"](#stmt), it should contain `BETWEEN` placeholders.  In fact, the SQL should look
+exactly like the ["stmt"](#stmt) query, except with `COUNT(*)` instead of the column list.
 
 Used only for ["Query DBI Processing"](#query-dbi-processing).  Optional, but recommended for
 [chunk resizing](#min_chunk_percent).
@@ -242,11 +306,11 @@ The coderef that will be called either on each chunk or each row, depending on h
 vary depending on the processing mode:
 
 ```perl
-$sth + $coderef                  = Query DBI Processing  | $bc->$coderef($executed_sth)
-$sth + $coderef + single_rows=>1 = Query DBI Processing  | $bc->$coderef($row_hashref)
-$rs  + $coderef                  = DBIC Processing       | $bc->$coderef($chunk_rs)
-$rs  + $coderef + single_rows=>1 = DBIC Processing       | $bc->$coderef($result)
-       $coderef                  = DIY Processing        | $bc->$coderef($start, $end)
+$stmt + $coderef                  = Query DBI Processing  | $bc->$coderef($executed_sth)
+$stmt + $coderef + single_rows=>1 = Query DBI Processing  | $bc->$coderef($row_hashref)
+$rs   + $coderef                  = DBIC Processing       | $bc->$coderef($chunk_rs)
+$rs   + $coderef + single_rows=>1 = DBIC Processing       | $bc->$coderef($result)
+        $coderef                  = DIY Processing        | $bc->$coderef($start, $end)
 ```
 
 The loop does not monitor the return values from the coderef.
@@ -258,7 +322,7 @@ Required for all processing modes except ["Active DBI Processing"](#active-dbi-p
 The amount of rows to be processed in each loop.
 
 Default is 1000 rows.  This figure should be sized to keep per-chunk processing time
-at around 10 seconds.  If this is too large, rows may lock for too long.  If it's too
+at around 15 seconds.  If this is too large, rows may lock for too long.  If it's too
 small, processing may be unnecessarily slow.
 
 ### target\_time
@@ -272,17 +336,19 @@ size is grossly inaccurate to the workload, you could end up with several chunks
 beginning causing long-lasting locks before the runtime targeting reduces them down to a
 reasonable size.
 
-Default is 0, which turns off runtime targeting.
+Default is 15 seconds.  Set this to zero to turn off runtime targeting.  (This was
+previously defaulted to off prior to v0.92.)
 
 ### sleep
 
 The number of seconds to sleep after each chunk.  It uses [Time::HiRes](https://metacpan.org/pod/Time::HiRes)'s version, so
 fractional numbers are allowed.
 
-Default is 0, but it is highly recommended to turn this on (say, 5 to 10 seconds) for
-really long one-off DB operations, especially if a lot of disk I/O is involved.  Without
-this, there's a chance that the slaves will have a hard time keeping up, and/or the
-master won't have enough processing power to keep up with standard load.
+Default is 0, which is fine for most operations.  But, it is highly recommended to turn
+this on (say, 5 to 10 seconds) for really long one-off DB operations, especially if a lot
+of disk I/O is involved.  Without this, there's a chance that the slaves will have a hard
+time keeping up, and/or the master won't have enough processing power to keep up with
+standard load.
 
 This will increase the overall processing time of the loop, so try to find a balance
 between the two.
@@ -291,7 +357,7 @@ between the two.
 
 Boolean that controls whether to check past the ["max\_id"](#max_id) during the loop.  If the loop
 hits the end point, it will run another maximum ID check in the DB, and adjust `max_id`
-accordingly.  If it somehow cannot run a DB check (no ["rs"](#rs) or ["max\_sth"](#max_sth) available,
+accordingly.  If it somehow cannot run a DB check (no ["rs"](#rs) or ["max\_stmt"](#max_stmt) available,
 for example), the last chunk will check all the way to `$DB_MAX_ID`.
 
 This is useful if the entire table is expected to be processed, and you don't want to
@@ -334,8 +400,7 @@ if ["sleep"](#sleep) is enabled.
 If this needs to be disabled, set this to 0.  The maximum chunk percentage does not have
 a setting and is hard-coded at `100% + min_chunk_percent`.
 
-Used only by ["DBIC Processing"](#dbic-processing) and ["Query DBI Processing"](#query-dbi-processing).  For the latter,
-["count\_sth"](#count_sth) is also required to enable chunk resizing.
+If DBIC processing isn't used, ["count\_stmt"](#count_stmt) is also required to enable chunk resizing.
 
 ### min\_id
 
@@ -462,13 +527,14 @@ ignore the return and throw away the object immediately.
 
 ```perl
 my $batch_chunker = DBIx::BatchChunker->new(
-    rsc     => $account_rsc,  # a ResultSetColumn
+    rsc      => $account_rsc,    # a ResultSetColumn
     ### OR ###
-    rs      => $account_rs,   # a ResultSet
-    id_name => 'account_id',  # can be looked up if not provided
+    rs       => $account_rs,     # a ResultSet
+    id_name  => 'account_id',    # can be looked up if not provided
     ### OR ###
-    min_sth => $min_sth,      # a DBI statement handle
-    max_sth => $max_sth,      # ditto
+    dbi_connector => $conn,      # DBIx::Connector::Retry object
+    min_stmt      => $min_stmt,  # a SQL statement or DBI $sth args
+    max_stmt      => $max_stmt,  # ditto
 
     ### Optional but recommended ###
     id_name      => 'account_id',  # will also be added into the progress bar title
@@ -484,7 +550,7 @@ my $has_data_to_process = $batch_chunker->calculate_ranges;
 ```
 
 Given a [DBIx::Class::ResultSetColumn](https://metacpan.org/pod/DBIx::Class::ResultSetColumn), [DBIx::Class::ResultSet](https://metacpan.org/pod/DBIx::Class::ResultSet), or [DBI](https://metacpan.org/pod/DBI) statement
-handle set, this method calculates the min/max IDs of those objects.  It fills in the
+argument set, this method calculates the min/max IDs of those objects.  It fills in the
 ["min\_id"](#min_id) and ["max\_id"](#max_id) attributes, based on the ID data, and then returns 1.
 
 If either of the min/max statements don't return any ID data, this method will return 0.
@@ -495,22 +561,24 @@ If either of the min/max statements don't return any ID data, this method will r
 my $batch_chunker = DBIx::BatchChunker->new(
     # ...other attributes for calculate_ranges...
 
-    sth       => $do_sth,       # INSERT/UPDATE/DELETE $sth with BETWEEN placeholders
+    dbi_connector => $conn,          # DBIx::Connector::Retry object
+    stmt          => $do_stmt,       # INSERT/UPDATE/DELETE $stmt with BETWEEN placeholders
     ### OR ###
-    sth       => $select_sth,   # SELECT $sth with BETWEEN placeholders
-    count_sth => $count_sth,    # SELECT COUNT $sth to be used for min_chunk_percent; optional
-    coderef   => $coderef,      # called code that does the actual work
+    dbi_connector => $conn,          # DBIx::Connector::Retry object
+    stmt          => $select_stmt,   # SELECT $stmt with BETWEEN placeholders
+    count_stmt    => $count_stmt,    # SELECT COUNT $stmt to be used for min_chunk_percent; optional
+    coderef       => $coderef,       # called code that does the actual work
     ### OR ###
-    rs        => $account_rs,   # base ResultSet, which gets filtered with -between later on
-    id_name   => 'account_id',  # can be looked up if not provided
-    coderef   => $coderef,      # called code that does the actual work
+    rs      => $account_rs,          # base ResultSet, which gets filtered with -between later on
+    id_name => 'account_id',         # can be looked up if not provided
+    coderef => $coderef,             # called code that does the actual work
     ### OR ###
-    coderef   => $coderef,      # DIY database work; just pass the $start/$end IDs
+    coderef => $coderef,             # DIY database work; just pass the $start/$end IDs
 
     ### Optional but recommended ###
-    sleep             => 5,    # number of seconds to sleep each chunk; defaults to 0
+    sleep             => 0.25, # number of seconds to sleep each chunk; defaults to 0
     process_past_max  => 1,    # use this if processing the whole table
-    single_rows       => 1,    # does $coderef get a single $row or the whole $chunk_rs / $sth
+    single_rows       => 1,    # does $coderef get a single $row or the whole $chunk_rs / $stmt
     min_chunk_percent => 0.25, # minimum row count of chunk size percentage; defaults to 0.5 (or 50%)
     target_time       => 15,   # target runtime for dynamic chunk size scaling; default is off
 
@@ -535,6 +603,11 @@ find them and warn about it.
 More details can be found in the ["Processing Modes"](#processing-modes) and ["ATTRIBUTES"](#attributes) sections.
 
 # PRIVATE METHODS
+
+## \_process\_block
+
+Runs the DB work and passes it to the coderef.  Its return value determines whether the
+block should be processed or not.
 
 ## \_process\_past\_max\_checker
 
