@@ -109,7 +109,7 @@ Result object instead of the chunk ResultSet.
 
 Note that whether L</single_rows> is enabled or not, the coderef execution is encapsulated
 in DBIC's retry logic, so any failures will re-connect and retry the coderef.  Because of
-this, any changes you make within the coderef should be idempotant, or should at least be
+this, any changes you make within the coderef should be idempotent, or should at least be
 able to skip over any already-processed rows.
 
 =head3 Active DBI Processing
@@ -133,7 +133,7 @@ clause.  For example:
 The C<BETWEEN> clause should, of course, match the IDs being used in the loop.
 
 The statement is ran with L</dbi_connector> for retry protection.  Therefore, the
-statement should also be idempotant.
+statement should also be idempotent.
 
 =head3 Query DBI Processing
 
@@ -150,7 +150,7 @@ row instead of the executed C<$sth>, with lowercase alias names used as keys.
 Note that in both cases, the coderef execution is encapsulated in a L<DBIx::Connector::Retry>
 call to either C<run> or C<txn> (using L</dbi_connector>), so any failures will
 re-connect and retry the coderef.  Because of this, any changes you make within the
-coderef should be idempotant, or should at least be able to skip over any
+coderef should be idempotent, or should at least be able to skip over any
 already-processed rows.
 
 =head3 DIY Processing

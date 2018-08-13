@@ -86,7 +86,7 @@ DESCRIPTION
     Note that whether "single_rows" is enabled or not, the coderef
     execution is encapsulated in DBIC's retry logic, so any failures will
     re-connect and retry the coderef. Because of this, any changes you make
-    within the coderef should be idempotant, or should at least be able to
+    within the coderef should be idempotent, or should at least be able to
     skip over any already-processed rows.
 
   Active DBI Processing
@@ -111,7 +111,7 @@ DESCRIPTION
     loop.
 
     The statement is ran with "dbi_connector" for retry protection.
-    Therefore, the statement should also be idempotant.
+    Therefore, the statement should also be idempotent.
 
   Query DBI Processing
 
@@ -131,7 +131,7 @@ DESCRIPTION
     DBIx::Connector::Retry call to either run or txn (using
     "dbi_connector"), so any failures will re-connect and retry the
     coderef. Because of this, any changes you make within the coderef
-    should be idempotant, or should at least be able to skip over any
+    should be idempotent, or should at least be able to skip over any
     already-processed rows.
 
   DIY Processing

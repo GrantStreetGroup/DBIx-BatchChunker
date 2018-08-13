@@ -85,7 +85,7 @@ Result object instead of the chunk ResultSet.
 
 Note that whether ["single\_rows"](#single_rows) is enabled or not, the coderef execution is encapsulated
 in DBIC's retry logic, so any failures will re-connect and retry the coderef.  Because of
-this, any changes you make within the coderef should be idempotant, or should at least be
+this, any changes you make within the coderef should be idempotent, or should at least be
 able to skip over any already-processed rows.
 
 ### Active DBI Processing
@@ -111,7 +111,7 @@ WHERE
 The `BETWEEN` clause should, of course, match the IDs being used in the loop.
 
 The statement is ran with ["dbi\_connector"](#dbi_connector) for retry protection.  Therefore, the
-statement should also be idempotant.
+statement should also be idempotent.
 
 ### Query DBI Processing
 
@@ -128,7 +128,7 @@ row instead of the executed `$sth`, with lowercase alias names used as keys.
 Note that in both cases, the coderef execution is encapsulated in a [DBIx::Connector::Retry](https://metacpan.org/pod/DBIx::Connector::Retry)
 call to either `run` or `txn` (using ["dbi\_connector"](#dbi_connector)), so any failures will
 re-connect and retry the coderef.  Because of this, any changes you make within the
-coderef should be idempotant, or should at least be able to skip over any
+coderef should be idempotent, or should at least be able to skip over any
 already-processed rows.
 
 ### DIY Processing
