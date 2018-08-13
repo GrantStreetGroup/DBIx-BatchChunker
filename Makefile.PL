@@ -74,6 +74,7 @@ my %WriteMakefileArgs = (
         'Test2::Tools::Explain'   => 0,
         'Scalar::Util'            => 0,
 
+        'Class::Load' => 0,
         'DBIx::Class' => 0,
         'DBIx::Connector::Retry' => 0,
         'Path::Class' => 0,
