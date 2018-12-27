@@ -1482,6 +1482,7 @@ sub _runtime_checker {
     my ($self) = @_;
     my $ls = $self->_loop_state;
     return unless $self->target_time;
+    return unless $ls->{chunk_size} && $ls->{prev_runtime};  # prevent DIV/0
 
     my $timings = $ls->{last_timings};
 
