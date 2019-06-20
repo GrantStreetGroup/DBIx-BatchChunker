@@ -423,7 +423,7 @@ has progress_name => (
     lazy     => 1,
     default  => sub {
         my $rs = shift->rs;
-        'Processing'.($rs ? ' '.$rs->result_source->name : '');
+        'Processing'.(defined $rs ? ' '.$rs->result_source->name : '');
     },
 );
 
@@ -478,7 +478,7 @@ has id_name => (
 
 sub _fix_id_name {
     my ($self, $id_name) = @_;
-    return if !$id_name || $id_name =~ /\./ || !$self->rs;  # prevent an infinite trigger loop
+    return if !$id_name || $id_name =~ /\./ || !defined $self->rs;  # prevent an infinite trigger loop
     $self->id_name( $self->rs->current_source_alias.".$id_name" );
 }
 
@@ -806,28 +806,28 @@ around BUILDARGS => sub {
     # Auto-building of rsc and id_name can be a weird dependency dance, so it's better to
     # handle it here.
     my ($rsc, $rs, $id_name) = @args{qw< rsc rs id_name >};
-    if    ($rsc && !$id_name) {
+    if    (defined $rsc && !$id_name) {
         $args{id_name} = $rsc->{_as};
     }
-    elsif (!$rsc && $id_name && $rs) {
+    elsif (!defined $rsc && $id_name && defined $rs) {
         $args{rsc}     = $rs->get_column( $args{id_name} );
     }
-    elsif (!$rsc && !$id_name && $rs) {
+    elsif (!defined $rsc && !$id_name && defined $rs) {
         $args{id_name} = ($rs->result_source->primary_columns)[0];
         $args{rsc}     = $rs->get_column( $args{id_name} );
     }
     $rsc = $args{rsc};
 
     # Auto-add dbic_storage, if available
-    if (!$args{dbic_storage} && ($rs || $rsc)) {
-        $args{dbic_storage} = $rs ? $rs->result_source->storage : $rsc->_resultset->result_source->storage;
+    if (!defined $args{dbic_storage} && (defined $rs || defined $rsc)) {
+        $args{dbic_storage} = defined $rs ? $rs->result_source->storage : $rsc->_resultset->result_source->storage;
     }
 
     # Find something to use as a dbi_connector, if it doesn't already exist
     my @old_attrs = qw< sth min_sth max_sth count_sth >;
     my @new_attrs = map { my $k = $_; $k =~ s/sth$/stmt/; $k } @old_attrs;
     my $example_key = first { $args{$_} } @old_attrs;
-    if ($example_key && !$args{dbi_connector}) {
+    if ($example_key && !defined $args{dbi_connector}) {
         warn join "\n",
             'The sth/*_sth options are now considered legacy usage in DBIx::BatchChunker.  Because there is no',
             'way to re-acquire the password, any attempt to reconnect will fail.  Please use dbi_connector and',
@@ -876,19 +876,19 @@ around BUILDARGS => sub {
 
     # Now check to make sure dbi_connector is available for DBI processing
     die 'DBI processing requires a dbi_connector or dbic_storage attribute!' if (
-        !($args{dbi_connector} || $args{dbic_storage}) &&
-        (first { $args{$_} } @new_attrs)
+        !(defined $args{dbi_connector} || defined $args{dbic_storage}) &&
+        (defined first { $args{$_} } @new_attrs)
     );
 
     # Other sanity checks
     die 'Range calculations requires one of these attr sets: rsc, rs, or dbi_connector|dbic_storage + min_stmt + max_stmt' unless (
-        $args{rsc} ||
-        ($args{min_stmt} && $args{max_stmt})
+        defined $args{rsc} ||
+        (defined $args{min_stmt} && defined $args{max_stmt})
     );
 
     die 'Block execution requires one of these attr sets: dbi_connector|dbic_storage + stmt, rs + coderef, or coderef' unless (
         $args{stmt} ||
-        ($args{rs} && $args{coderef}) ||
+        (defined $args{rs} && $args{coderef}) ||
         $args{coderef}
     );
 
@@ -1176,7 +1176,7 @@ sub _process_block {
     # Figure out if the row count is worth the work
     my $chunk_rs;
     my $count_stmt = $self->count_stmt;
-    if ($count_stmt && $self->dbic_storage) {
+    if ($count_stmt && defined $self->dbic_storage) {
         $self->_dbic_block_runner( run => sub {
             ($self->_loop_state->{chunk_count}) = $self->dbic_storage->dbh->selectrow_array(
                 @$count_stmt,
@@ -1194,7 +1194,7 @@ sub _process_block {
             );
         });
     }
-    elsif ($rs) {
+    elsif (defined $rs) {
         $chunk_rs = $rs->search({
             $self->id_name => { -between => [@$ls{qw< start end >}] },
         });
@@ -1265,7 +1265,7 @@ sub _process_block {
             }
         }
     }
-    elsif ($rs && $coderef) {
+    elsif (defined $rs && $coderef) {
         ### ResultSet with coderef
 
         if ($self->single_rows) {
@@ -1316,7 +1316,7 @@ sub _process_past_max_checker {
     return 1 unless $ls->{end} > $self->max_id;
 
     # No checks for DIY, if they didn't include a max_stmt
-    unless ($self->rsc || $self->max_stmt) {
+    unless (defined $self->rsc || $self->max_stmt) {
         # There's no way to size this, so skip past the max as one block
         $ls->{end} = $ls->{max_end};
         return 1;
@@ -1325,7 +1325,7 @@ sub _process_past_max_checker {
     # Run another MAX check
     $progress->message('Reached end; re-checking max ID') if $self->debug;
     my $new_max_id;
-    if (my $rsc = $self->rsc) {
+    if (defined( my $rsc = $self->rsc )) {
         $self->_dbic_block_runner( run => sub {
             $new_max_id = $rsc->max;
         });
