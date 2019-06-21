@@ -4,7 +4,7 @@ DBIx::BatchChunker - Run large database changes safely
 
 # VERSION
 
-version 0.93
+version 0.94
 
 # SYNOPSIS
 
@@ -650,7 +650,7 @@ pulled from ["\_loop\_state"](#_loop_state).
 
 # AUTHOR
 
-Grant Street Group &lt;developers@grantstreet.com>
+Grant Street Group <developers@grantstreet.com>
 
 # LICENSE AND COPYRIGHT
 
