@@ -4,6 +4,7 @@ our $AUTHORITY = 'cpan:GSG';
 our $VERSION   = '0.94';
 
 use Moo;
+use MooX::StrictConstructor;
 
 use CLDR::Number;
 
@@ -18,7 +19,8 @@ use Scalar::Util            qw( blessed weaken );
 use Term::ProgressBar 2.14;                          # with silent option
 use Time::HiRes             qw( time sleep );
 
-use namespace::clean;  # don't export the above
+# Don't export the above, but don't conflict with StrictConstructor, either
+use namespace::clean -except => [qw< new meta >];
 
 our $DB_MAX_ID = Data::Float::max_integer;  # used for progress_past_max
 
