@@ -217,6 +217,36 @@ subtest 'DIY Processing (+ min_chunk_percent)' => sub {
     cmp_ok($max_range,  '>', $CHUNK_SIZE,       'Expanded chunk at least once');
 };
 
+subtest 'DIY Processing (manual range calculations)' => sub {
+    my $calls = 0;
+
+    # Constructor
+    my $batch_chunker = DBIx::BatchChunker->new(
+        chunk_size => $CHUNK_SIZE,
+
+        coderef    => sub {
+            my ($bc, $start, $end) = @_;
+            ok(looks_like_number $start,  '$start is a number');
+            ok(looks_like_number $end,    '$end   is a number');
+            $calls++;
+
+            my $ls     = $bc->_loop_state;
+            note explain $ls if $BATCHCHUNK_TEST_DEBUG;
+        },
+
+        target_time => 0,
+    );
+    $batch_chunker->min_id(4);
+    $batch_chunker->max_id(70);
+
+    my $range = $batch_chunker->max_id - $batch_chunker->min_id + 1;
+    my $multiplier_range = ceil($range / $CHUNK_SIZE);
+
+    # Process
+    $batch_chunker->execute;
+    cmp_ok($calls, '==', $multiplier_range, 'Right number of calls');
+};
+
 subtest 'Retry testing' => sub {
     my $calls = 0;
 

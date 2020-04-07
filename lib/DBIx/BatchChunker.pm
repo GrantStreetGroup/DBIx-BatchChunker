@@ -876,9 +876,10 @@ around BUILDARGS => sub {
     );
 
     # Other sanity checks
-    die 'Range calculations requires one of these attr sets: rsc, rs, or dbi_connector|dbic_storage + min_stmt + max_stmt' unless (
+    die 'Range calculations require one of these attr sets: rsc, rs, or dbi_connector|dbic_storage + min_stmt + max_stmt' unless (
         defined $args{rsc} ||
-        (defined $args{min_stmt} && defined $args{max_stmt})
+        (defined $args{min_stmt} && defined $args{max_stmt}) ||
+        (!defined $args{dbi_connector} && !defined $args{dbic_storage} && defined $args{coderef})  # DIY mode is exempt
     );
 
     die 'Block execution requires one of these attr sets: dbi_connector|dbic_storage + stmt, rs + coderef, or coderef' unless (
