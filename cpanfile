@@ -33,10 +33,7 @@ on test => sub {
 
 on develop => sub {
     requires 'Dist::Zilla::PluginBundle::Author::GSG';
-    requires 'File::Find';
-    requires 'Module::Metadata';
     requires 'Test2::Require::AuthorTesting';
-    requires 'Test::CPAN::Changes';
     requires 'Test::Pod';
     requires 'Test::Pod::Coverage';
     requires 'Test::Strict';
