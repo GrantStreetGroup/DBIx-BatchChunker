@@ -1,7 +1,8 @@
 package DBIx::BatchChunker;
 
 our $AUTHORITY = 'cpan:GSG';
-our $VERSION   = '0.94';
+# ABSTRACT: Run large database changes safely
+# VERSION
 
 use Moo;
 use MooX::StrictConstructor;
@@ -25,14 +26,6 @@ use namespace::clean -except => [qw< new meta >];
 our $DB_MAX_ID = Data::Float::max_integer;  # used for progress_past_max
 
 =encoding utf8
-
-=head1 NAME
-
-DBIx::BatchChunker - Run large database changes safely
-
-=head1 VERSION
-
-version 0.94
 
 =head1 SYNOPSIS
 
@@ -1626,20 +1619,6 @@ sub _print_debug_status {
 =head1 SEE ALSO
 
 L<DBIx::BulkLoader::Mysql>, L<DBIx::Class::BatchUpdate>, L<DBIx::BulkUtil>
-
-=head1 AUTHOR
-
-Grant Street Group <developers@grantstreet.com>
-
-=head1 LICENSE AND COPYRIGHT
-
-Copyright 2019 Grant Street Group
-
-This program is free software; you can redistribute it and/or modify it
-under the terms of the the Artistic License (2.0). You may obtain a
-copy of the full license at:
-
-L<http://www.perlfoundation.org/artistic_license_2_0>
 
 =cut
 

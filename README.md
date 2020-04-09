@@ -1,6 +1,6 @@
 # NAME
 
-DBIx::BatchChunker
+DBIx::BatchChunker - Run large database changes safely
 
 # VERSION
 
@@ -146,14 +146,6 @@ constructor to enable features like [max ID recalculation](#process_past_max) or
     $rs   + $coderef                  = DBIC Processing       | $bc->$coderef($chunk_rs)
     $rs   + $coderef + single_rows=>1 = DBIC Processing       | $bc->$coderef($result)
             $coderef                  = DIY Processing        | $bc->$coderef($start, $end)
-
-# NAME
-
-DBIx::BatchChunker - Run large database changes safely
-
-# VERSION
-
-version 0.94
 
 # ATTRIBUTES
 
@@ -635,20 +627,6 @@ pulled from ["\_loop\_state"](#_loop_state).
 # SEE ALSO
 
 [DBIx::BulkLoader::Mysql](https://metacpan.org/pod/DBIx%3A%3ABulkLoader%3A%3AMysql), [DBIx::Class::BatchUpdate](https://metacpan.org/pod/DBIx%3A%3AClass%3A%3ABatchUpdate), [DBIx::BulkUtil](https://metacpan.org/pod/DBIx%3A%3ABulkUtil)
-
-# AUTHOR
-
-Grant Street Group <developers@grantstreet.com>
-
-# LICENSE AND COPYRIGHT
-
-Copyright 2019 Grant Street Group
-
-This program is free software; you can redistribute it and/or modify it
-under the terms of the the Artistic License (2.0). You may obtain a
-copy of the full license at:
-
-[http://www.perlfoundation.org/artistic\_license\_2\_0](http://www.perlfoundation.org/artistic_license_2_0)
 
 # AUTHOR
 
