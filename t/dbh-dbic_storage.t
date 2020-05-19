@@ -78,6 +78,12 @@ subtest 'Active DBI Processing (+ sleep)' => sub {
     cmp_ok($calls,      '==', $multiplier_range,       'Right number of calls');
     cmp_ok($total_time, '>=', $multiplier_range * 0.1, 'Slept ok');
     cmp_ok($total_time, '<',  $multiplier_range * 0.5, 'Did not oversleep');
+
+    # Remove the callback completely
+    my $dbh = $storage->dbh;
+    delete $dbh->{Callbacks}{ChildCallbacks}{execute};
+    delete $dbh->{Callbacks}{ChildCallbacks};
+    delete $dbh->{Callbacks};
 };
 
 subtest 'Query DBI Processing (+ min_chunk_percent)' => sub {
@@ -253,6 +259,12 @@ subtest 'Retry testing' => sub {
     # Process
     $batch_chunker->execute;
     cmp_ok($calls, '==', $multiplier_range * 3, 'Right number of calls');
+
+    # Remove the callback completely
+    my $dbh = $storage->dbh;
+    delete $dbh->{Callbacks}{ChildCallbacks}{execute};
+    delete $dbh->{Callbacks}{ChildCallbacks};
+    delete $dbh->{Callbacks};
 };
 
 subtest 'Retry testing + single_rows' => sub {

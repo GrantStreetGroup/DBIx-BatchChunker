@@ -210,11 +210,10 @@ DBIC.  So far, there are two supported options:
     retry_handler = Coderef that returns true to continue to retry or false to re-throw
                     the last exception
 
-The default is to use DBIC's built-in retry options, the same way L<DBIx::Class::Storage::DBI/dbh_do>
-does it, which will retry once if the DB connection was disconnected.  If you specify any
-options, even a blank hashref, BatchChunker will fill in a default C<max_attempts> of 10,
-and an always-true C<retry_handler>.  This is similar to L<DBIx::Connector::Retry>'s
-defaults.
+The default is to let the DBIC storage engine handle its own protection, which will retry
+once if the DB connection was disconnected.  If you specify any options, even a blank
+hashref, BatchChunker will fill in a default C<max_attempts> of 10, and an always-true
+C<retry_handler>.  This is similar to L<DBIx::Connector::Retry>'s defaults.
 
 Under the hood, these are options that are passed to the as-yet-undocumented
 L<DBIx::Class::Storage::BlockRunner>.  The C<retry_handler> has access to the same
@@ -224,26 +223,22 @@ C<failed_attempt_count>, and C<last_exception>.
 =cut
 
 has dbic_retry_opts => (
-    is       => 'ro',
-    isa      => HashRef,
-    required => 0,
-    lazy     => 1,
-    builder  => 1,
+    is        => 'ro',
+    isa       => HashRef,
+    required  => 0,
+    predicate => 1,
 );
-
-sub _build_dbic_retry_opts {
-    my $self = shift;
-
-    return {
-        # the default from DBIC
-        retry_handler => sub {
-            $_[0]->failed_attempt_count == 1 && !$_[0]->storage->connected
-        },
-    };
-}
 
 sub _dbic_block_runner {
     my ($self, $method, $coderef) = @_;
+
+    my $storage = $self->dbic_storage;
+
+    # Block running disabled
+    unless ($self->has_dbic_retry_opts) {
+        return $storage->txn_do($coderef) if $method eq 'txn';
+        return $storage->dbh_do($coderef);
+    }
 
     # A very light wrapper around BlockRunner.  No need to load BlockRunner, since DBIC
     # loads it in before us if we're using this method.
@@ -255,7 +250,7 @@ sub _dbic_block_runner {
         # never overrides the important ones below
         %{ $self->dbic_retry_opts },
 
-        storage  => $self->dbic_storage,
+        storage  => $storage,
         wrap_txn => ($method eq 'txn' ? 1 : 0),
     )->run($coderef);
 }
