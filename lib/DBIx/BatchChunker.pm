@@ -1018,7 +1018,7 @@ sub calculate_ranges {
     }
 
     # Set the ranges and return
-    return 0 unless defined $min_id && $max_id;
+    return 0 unless defined $min_id && defined $max_id;
 
     $self->min_id( int $min_id );
     $self->max_id( int $max_id );
