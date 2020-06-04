@@ -104,8 +104,8 @@ subtest 'Query DBI Processing (+ min_chunk_percent)' => sub {
             isa_ok($sth, ['DBI::st'], '$sth');
             $calls++;
 
-            my $ls     = $bc->_loop_state;
-            my $range  = $ls->{end} - $ls->{start} + 1;
+            my $ls     = $bc->loop_state;
+            my $range  = $ls->end - $ls->start + 1;
             $max_range = $range if $range > $max_range;
             note explain $ls if $BATCHCHUNK_TEST_DEBUG;
         },
@@ -156,7 +156,7 @@ subtest 'Query DBI Processing + single_row (+ rsc)' => sub {
             $calls++;
 
             if ($BATCHCHUNK_TEST_DEBUG) {
-                note explain $bc->_loop_state;
+                note explain $bc->loop_state;
                 note explain $row;
             }
         },
@@ -193,8 +193,8 @@ subtest 'DIY Processing (+ min_chunk_percent)' => sub {
             ok(looks_like_number $end,    '$end   is a number');
             $calls++;
 
-            my $ls     = $bc->_loop_state;
-            my $range  = $ls->{end} - $ls->{start} + 1;
+            my $ls     = $bc->loop_state;
+            my $range  = $ls->end - $ls->start + 1;
             $max_range = $range if $range > $max_range;
             note explain $ls if $BATCHCHUNK_TEST_DEBUG;
         },
@@ -290,7 +290,7 @@ subtest 'Retry testing + single_rows' => sub {
             $calls++;
 
             if ($BATCHCHUNK_TEST_DEBUG) {
-                note explain $bc->_loop_state;
+                note explain $bc->loop_state;
                 note explain $row;
             }
 

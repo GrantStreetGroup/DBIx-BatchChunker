@@ -49,7 +49,7 @@ subtest 'DBIC Processing (+ process_past_max)' => sub {
             my ($bc, $rs) = @_;
             isa_ok($rs, ['DBIx::Class::ResultSet'], '$rs');
             $calls++;
-            note explain $bc->_loop_state if $BATCHCHUNK_TEST_DEBUG;
+            note explain $bc->loop_state if $BATCHCHUNK_TEST_DEBUG;
         },
 
         process_past_max  => 1,
@@ -91,7 +91,7 @@ subtest 'DBIC Processing + single_rows (+ rsc)' => sub {
             my ($bc, $result) = @_;
             isa_ok($result, ['DBIx::Class::Row'], '$result');
             $calls++;
-            note explain $bc->_loop_state if $BATCHCHUNK_TEST_DEBUG;
+            note explain $bc->loop_state if $BATCHCHUNK_TEST_DEBUG;
         },
 
         single_rows       => 1,
@@ -161,6 +161,7 @@ subtest 'process_past_max + min_chunk_percent' => sub {
             isa_ok($rs, ['DBIx::Class::ResultSet'], '$rs');
             $calls++;
 
+            # Purposely using older loop state hashref calls to check for backwards-compatibility
             my $ls     = $bc->_loop_state;
             $max_count = $ls->{chunk_count} if $ls->{chunk_count} > $max_count;
             $max_id    = $ls->{end}         if $ls->{end}         > $max_id;
@@ -213,7 +214,7 @@ subtest 'Automatic execution (DBIC Processing + single_rows + rsc)' => sub {
             my ($bc, $result) = @_;
             isa_ok($result, ['DBIx::Class::Row'], '$result');
             $calls++;
-            note explain $bc->_loop_state if $BATCHCHUNK_TEST_DEBUG;
+            note explain $bc->loop_state if $BATCHCHUNK_TEST_DEBUG;
         },
 
         single_rows       => 1,
@@ -244,12 +245,12 @@ subtest 'Runtime targeting (too fast)' => sub {
             $calls++;
             sleep 0.05;
 
-            my $ls = $bc->_loop_state;
-            if ($ls->{chunk_size} > $max_size) {
-                $max_size = $ls->{chunk_size};
+            my $ls = $bc->loop_state;
+            if ($ls->chunk_size > $max_size) {
+                $max_size = $ls->chunk_size;
                 $chunk_size_changes++;
             }
-            $max_time = $ls->{prev_runtime} if $ls->{prev_runtime} && $ls->{prev_runtime} > $max_time;
+            $max_time = $ls->prev_runtime if $ls->prev_runtime && $ls->prev_runtime > $max_time;
 
             note explain $ls if $BATCHCHUNK_TEST_DEBUG;
         },
@@ -284,12 +285,12 @@ subtest 'Runtime targeting (too slow)' => sub {
             $calls++;
             sleep 0.25;
 
-            my $ls = $bc->_loop_state;
-            if ($ls->{chunk_size} < $min_size) {
-                $min_size = $ls->{chunk_size};
+            my $ls = $bc->loop_state;
+            if ($ls->chunk_size < $min_size) {
+                $min_size = $ls->chunk_size;
                 $chunk_size_changes++;
             }
-            $min_time = $ls->{prev_runtime} if $ls->{prev_runtime} && $ls->{prev_runtime} < $min_time;
+            $min_time = $ls->prev_runtime if $ls->prev_runtime && $ls->prev_runtime < $min_time;
 
             note explain $ls if $BATCHCHUNK_TEST_DEBUG;
         },
@@ -318,7 +319,7 @@ subtest 'Retry testing' => sub {
         coderef     => sub {
             my ($bc, $rs) = @_;
             isa_ok($rs, ['DBIx::Class::ResultSet'], '$rs');
-            note explain $bc->_loop_state if $BATCHCHUNK_TEST_DEBUG;
+            note explain $bc->loop_state if $BATCHCHUNK_TEST_DEBUG;
             $calls++;
             die "Don't wanna process right now" if $calls % 3;  # fail 2/3rds of the calls
         },
@@ -352,7 +353,7 @@ subtest 'Retry testing + single_rows' => sub {
         coderef     => sub {
             my ($bc, $result) = @_;
             isa_ok($result, ['DBIx::Class::Row'], '$result');
-            note explain $bc->_loop_state if $BATCHCHUNK_TEST_DEBUG;
+            note explain $bc->loop_state if $BATCHCHUNK_TEST_DEBUG;
             $calls++;
             # fail one of the rows, which will restart the whole chunk
             die "Don't wanna process right now" unless $calls % ($CHUNK_SIZE + 1);

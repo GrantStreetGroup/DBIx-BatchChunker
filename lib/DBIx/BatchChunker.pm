@@ -20,6 +20,8 @@ use Scalar::Util            qw( blessed weaken );
 use Term::ProgressBar 2.14;                          # with silent option
 use Time::HiRes             qw( time sleep );
 
+use DBIx::BatchChunker::LoopState;
+
 # Don't export the above, but don't conflict with StrictConstructor, either
 use namespace::clean -except => [qw< new meta >];
 
@@ -664,128 +666,24 @@ has max_id => (
     isa      => PositiveOrZeroInt,
 );
 
-=head2 Private Attributes
+=head3 loop_state
 
-=head3 _loop_state
-
-These variables exist solely for the processing loop.  They should be cleared out after
-use.  Most of the complexity is needed for chunk resizing.
-
-=over
-
-=item timer
-
-Timer for debug messages.  Always spans the time between debug messages.
-
-=item start
-
-The real start ID that the loop is currently on.  May continue to exist within iterations
-if chunk resizing is trying to find a valid range.  Otherwise, this value will become
-undef when a chunk is finally processed.
-
-=item end
-
-The real end ID that the loop is currently looking at.  This is always redefined at the
-beginning of the loop.
-
-=item prev_end
-
-Last "processed" value of C<end>.  This also includes skipped blocks.  Used in C<start>
-calculations and to determine if the end of the loop has been reached.
-
-=item max_end
-
-The maximum ending ID.  This will be C<$DB_MAX_ID> if L</process_past_max> is set.
-
-=item last_range
-
-A hashref of keys used for the bisecting of one block.  Cleared out after a block has
-been processed or skipped.
-
-=item last_timings
-
-An arrayref of hashrefs, containing data for the previous 5 runs.  This data is used for
-runtime targeting.
-
-=item multiplier_range
-
-The range (in units of L</chunk_size>) between the start and end IDs.  This starts at 1
-(at the beginning of the loop), but may expand or shrink depending on chunk count checks.
-Resets after block processing.
-
-=item multiplier_step
-
-Determines how fast multiplier_range increases, so that chunk resizing happens at an
-accelerated pace.  Speeds or slows depending on what kind of limits the chunk count
-checks are hitting.  Resets after block processing.
-
-=item checked_count
-
-A check counter to make sure the chunk resizing isn't taking too long.  After ten checks,
-it will give up, assuming the block is safe to process.
-
-=item chunk_size
-
-The I<current> chunk size, which might be adjusted by runtime targeting.
-
-=item chunk_count
-
-Records the results of the C<COUNT(*)> query for chunk resizing.
-
-=item prev_check
-
-A short string recording what happened during the last chunk resizing check.  Exists
-purely for debugging purposes.
-
-=item prev_runtime
-
-The number of seconds the previously processed chunk took to run, not including sleep
-time.
-
-=item progress_bar
-
-The progress bar being used in the loop.  This may be different than L</progress_bar>,
-since it could be auto-generated.
-
-=back
+A L<DBIx::BatchChunker::LoopState> object designed to hold variables during the
+processing loop.  The object will be cleared out after use.  Most of the complexity is
+needed for chunk resizing.
 
 =cut
 
-has _loop_state => (
+has loop_state => (
     is       => 'rw',
-    isa      => HashRef,
+    isa      => InstanceOf['DBIx::BatchChunker::LoopState'],
     required => 0,
     init_arg => undef,
-    lazy     => 1,
-    builder  => '_build_loop_state',
-    clearer  => '_clear_loop_state',
+    clearer  => 'clear_loop_state',
 );
 
-sub _build_loop_state {
-    my $self = shift;
-
-    my $start = $self->min_id;
-
-    return {
-        timer    => time,
-        start    => $start,
-        end      => $start + $self->chunk_size - 1,
-        prev_end => $start - 1,
-        max_end  => ($self->process_past_max ? $DB_MAX_ID : $self->max_id),
-
-        last_range       => {},
-        last_timings     => [],
-        multiplier_range => 0,
-        multiplier_step  => 1,
-        checked_count    => 0,
-        chunk_size       => $self->chunk_size,
-        chunk_count      => undef,
-        prev_check       => '',
-        prev_runtime     => undef,
-
-        progress_bar     => undef,
-    };
-}
+# Backwards-compatibility
+*_loop_state = \&loop_state;
 
 around BUILDARGS => sub {
     my $next  = shift;
@@ -1102,16 +1000,18 @@ sub execute {
     }
 
     # Loop state setup
-    $self->_clear_loop_state;
-    my $ls = $self->_loop_state;
-    $ls->{progress_bar} = $progress;
+    $self->clear_loop_state;
+    my $ls = $self->loop_state( DBIx::BatchChunker::LoopState->new({
+        batch_chunker => $self,
+        progress_bar  => $progress,
+    }) );
 
     # Da loop
-    while ($ls->{prev_end} < $ls->{max_end} || $ls->{start}) {
-        $ls->{multiplier_range} += $ls->{multiplier_step};
-        $ls->{start}             = $ls->{prev_end} + 1 unless defined $ls->{start};   # this could be already set because of early 'next' calls
-        $ls->{end}               = $ls->{start} + $ls->{multiplier_range} * $ls->{chunk_size} - 1;
-        $ls->{chunk_count}       = undef;
+    while ($ls->prev_end < $ls->max_end || $ls->start) {
+        $ls->multiplier_range($ls->multiplier_range + $ls->multiplier_step);
+        $ls->start           ($ls->prev_end + 1) unless defined $ls->start;   # this could be already set because of early 'next' calls
+        $ls->end             ($ls->start + $ls->multiplier_range * $ls->chunk_size - 1);
+        $ls->chunk_count     (undef);
 
         next unless $self->_process_past_max_checker;
 
@@ -1119,7 +1019,7 @@ sub execute {
         next unless $self->_process_block;
 
         # Record the time quickly
-        $ls->{prev_runtime} = time - $ls->{timer};
+        $ls->prev_runtime(time - $ls->timer);
 
         # Give the DB a little bit of breathing room
         sleep $self->sleep if $self->sleep;
@@ -1129,16 +1029,9 @@ sub execute {
         $self->_runtime_checker;
 
         # End-of-loop activities (skipped by early next)
-        $ls->{start}     = undef;
-        $ls->{prev_end}  = $ls->{end};
-        $ls->{timer}     = time;
-
-        $ls->{last_range}       = {};
-        $ls->{multiplier_range} = 0;
-        $ls->{multiplier_step}  = 1;
-        $ls->{checked_count}    = 0;
+        $ls->_reset_chunk_state;
     }
-    $self->_clear_loop_state;
+    $self->clear_loop_state;
 
     # Keep the finished time from the progress bar, in case there are other loops or output
     unless ($progress->silent) {
@@ -1159,7 +1052,7 @@ block should be processed or not.
 sub _process_block {
     my ($self) = @_;
 
-    my $ls      = $self->_loop_state;
+    my $ls      = $self->loop_state;
     my $conn    = $self->dbi_connector;
     my $coderef = $self->coderef;
     my $rs      = $self->rs;
@@ -1169,29 +1062,29 @@ sub _process_block {
     my $count_stmt = $self->count_stmt;
     if ($count_stmt && defined $self->dbic_storage) {
         $self->_dbic_block_runner( run => sub {
-            ($self->_loop_state->{chunk_count}) = $self->dbic_storage->dbh->selectrow_array(
+            $self->loop_state->chunk_count( $self->dbic_storage->dbh->selectrow_array(
                 @$count_stmt,
                 (@$count_stmt == 1 ? undef : ()),
-                @$ls{qw< start end >},
-            );
+                $ls->start, $ls->end,
+            ) );
         });
     }
     elsif ($count_stmt) {
-        ($ls->{chunk_count}) = $conn->run(sub {
+        $ls->chunk_count( $conn->run(sub {
             $_->selectrow_array(
                 @$count_stmt,
                 (@$count_stmt == 1 ? undef : ()),
-                @$ls{qw< start end >},
+                $ls->start, $ls->end,
             );
-        });
+        }) );
     }
     elsif (defined $rs) {
         $chunk_rs = $rs->search({
-            $self->id_name => { -between => [@$ls{qw< start end >}] },
+            $self->id_name => { -between => [$ls->start, $ls->end] },
         });
 
         $self->_dbic_block_runner( run => sub {
-            $self->_loop_state->{chunk_count} = $chunk_rs->count;
+            $self->loop_state->chunk_count( $chunk_rs->count );
         });
     }
 
@@ -1206,14 +1099,14 @@ sub _process_block {
         my @prepare_args = @$stmt > 2 ? @$stmt[0..1] : @$stmt;
         my @execute_args = (
             (@$stmt > 2 ? @$stmt[2..$#$stmt] : ()),
-            @$ls{qw< start end >},
+            $ls->start, $ls->end,
         );
 
         if ($self->single_rows && $coderef) {
             # Transactional work
             if ($self->dbic_storage) {
                 $self->_dbic_block_runner( txn => sub {
-                    $self->_loop_state->{timer} = time;  # reset timer on retries
+                    $self->loop_state->_mark_timer;  # reset timer on retries
 
                     my $sth = $self->dbic_storage->dbh->prepare(@prepare_args);
                     $sth->execute(@execute_args);
@@ -1223,7 +1116,7 @@ sub _process_block {
             }
             else {
                 $conn->txn(sub {
-                    $self->_loop_state->{timer} = time;  # reset timer on retries
+                    $self->loop_state->_mark_timer;  # reset timer on retries
 
                     my $sth = $_->prepare(@prepare_args);
                     $sth->execute(@execute_args);
@@ -1236,7 +1129,7 @@ sub _process_block {
             # Bulk work (or DML)
             if ($self->dbic_storage) {
                 $self->_dbic_block_runner( run => sub {
-                    $self->_loop_state->{timer} = time;  # reset timer on retries
+                    $self->loop_state->_mark_timer;  # reset timer on retries
 
                     my $sth = $self->dbic_storage->dbh->prepare(@prepare_args);
                     $sth->execute(@execute_args);
@@ -1246,7 +1139,7 @@ sub _process_block {
             }
             else {
                 $conn->run(sub {
-                    $self->_loop_state->{timer} = time;  # reset timer on retries
+                    $self->loop_state->_mark_timer;  # reset timer on retries
 
                     my $sth = $_->prepare(@prepare_args);
                     $sth->execute(@execute_args);
@@ -1263,7 +1156,7 @@ sub _process_block {
             # Transactional work
             $self->_dbic_block_runner( txn => sub {
                 # reset timer/$rs on retries
-                $self->_loop_state->{timer} = time;
+                $self->loop_state->_mark_timer;
                 $chunk_rs->reset;
 
                 while (my $row = $chunk_rs->next) { $self->coderef->($self, $row) }
@@ -1273,7 +1166,7 @@ sub _process_block {
             # Bulk work
             $self->_dbic_block_runner( run => sub {
                 # reset timer/$rs on retries
-                $self->_loop_state->{timer} = time;
+                $self->loop_state->_mark_timer;
                 $chunk_rs->reset;
 
                 $self->coderef->($self, $chunk_rs);
@@ -1283,7 +1176,7 @@ sub _process_block {
     else {
         ### Something a bit more free-form
 
-        $self->$coderef(@$ls{qw< start end >});
+        $self->$coderef($ls->start, $ls->end);
     }
 
     return 1;
@@ -1300,16 +1193,16 @@ See L</process_past_max>.
 
 sub _process_past_max_checker {
     my ($self) = @_;
-    my $ls = $self->_loop_state;
-    my $progress = $ls->{progress_bar};
+    my $ls = $self->loop_state;
+    my $progress = $ls->progress_bar;
 
     return 1 unless $self->process_past_max;
-    return 1 unless $ls->{end} > $self->max_id;
+    return 1 unless $ls->end > $self->max_id;
 
     # No checks for DIY, if they didn't include a max_stmt
     unless (defined $self->rsc || $self->max_stmt) {
         # There's no way to size this, so skip past the max as one block
-        $ls->{end} = $ls->{max_end};
+        $ls->end($ls->max_end);
         return 1;
     }
 
@@ -1331,14 +1224,14 @@ sub _process_past_max_checker {
             $_->selectrow_array(@{ $self->max_stmt });
         });
     }
-    $ls->{timer} = time;  # the above query shouldn't impact runtimes
+    $ls->_mark_timer;  # the above query shouldn't impact runtimes
 
     if (!$new_max_id || $new_max_id eq '0E0') {
         # No max: No affected rows to change
         $progress->message('No max ID found; nothing left to process...') if $self->debug;
-        $ls->{end} = $ls->{max_end};
+        $ls->end($ls->max_end);
 
-        $ls->{prev_check} = 'no max';
+        $ls->prev_check('no max');
         return 0;
     }
     elsif ($new_max_id > $self->max_id) {
@@ -1351,12 +1244,12 @@ sub _process_past_max_checker {
     elsif ($new_max_id == $self->max_id) {
         # Same max ID
         $progress->message( sprintf 'Found max ID %u; same as end', $new_max_id ) if $self->debug;
-        $ls->{max_end} = $new_max_id;
+        $ls->max_end($new_max_id);
     }
     else {
         # Max too low
         $progress->message( sprintf 'Found max ID %u; ignoring...', $new_max_id ) if $self->debug;
-        $ls->{max_end} = $self->max_id;
+        $ls->max_end($self->max_id);
     }
 
     return 1;
@@ -1377,86 +1270,83 @@ after processing, based on previous run times.
 
 sub _chunk_count_checker {
     my ($self) = @_;
-    my $ls = $self->_loop_state;
-    my $progress = $ls->{progress_bar};
+    my $ls = $self->loop_state;
+    my $progress = $ls->progress_bar;
 
     # Chunk sizing is essentially disabled, so bounce out of here
-    if ($self->min_chunk_percent <= 0 || !defined $ls->{chunk_count}) {
-        $ls->{prev_check} = 'disabled';
+    if ($self->min_chunk_percent <= 0 || !defined $ls->chunk_count) {
+        $ls->prev_check('disabled');
         return 1;
     }
 
-    my $chunk_percent = $ls->{chunk_count} / $ls->{chunk_size};
-    $ls->{checked_count}++;
+    my $chunk_percent = $ls->chunk_count / $ls->chunk_size;
+    $ls->checked_count( $ls->checked_count + 1 );
 
-    if    ($ls->{chunk_count} == 0 && $self->min_chunk_percent > 0) {
+    if    ($ls->chunk_count == 0 && $self->min_chunk_percent > 0) {
         # No rows: Skip the block entirely, and accelerate the stepping
         $self->_print_debug_status('skipped');
 
         $self->_increment_progress;
-        $ls->{start}     = undef;
-        $ls->{prev_end}  = $ls->{end};
-        $ls->{timer}     = time;
 
-        $ls->{last_range}       = {};
-        $ls->{multiplier_range} = 0;
-        $ls->{multiplier_step} *= 2;
-        $ls->{checked_count}    = 0;
+        my $step = $ls->multiplier_step;
+        $ls->_reset_chunk_state;
+        $ls->multiplier_step( $step * 2 );
 
-        $ls->{prev_check} = 'skipped rows';
+        $ls->prev_check('skipped rows');
         return 0;
     }
     elsif ($chunk_percent > 1 + $self->min_chunk_percent) {
         # Too many rows: Backtrack to the previous range and try to bisect
         $self->_print_debug_status('shrunk');
 
-        $ls->{timer} = time;
+        $ls->_mark_timer;
 
         # If we have a min/max range, bisect down the middle.  If not, walk back
         # to the previous range and decelerate the stepping, which should bring
         # it to a halfway point from this range and last.
-        $ls->{last_range}{max}  = $ls->{multiplier_range} if !defined $ls->{last_range}{max} || $ls->{multiplier_range} < $ls->{last_range}{max};
-        $ls->{multiplier_range} = $ls->{last_range}{min} || ($ls->{multiplier_range} - $ls->{multiplier_step});
-        $ls->{multiplier_step}  = int( defined $ls->{last_range}{min} ?
-            ($ls->{last_range}{max} - $ls->{last_range}{min}) / 2 :
-            $ls->{multiplier_step} / 2
-        );
+        my $lr = $ls->last_range;
+        $lr->{max} = $ls->multiplier_range if !defined $lr->{max} || $ls->multiplier_range < $lr->{max};
+        $ls->multiplier_range( $lr->{min} || ($ls->multiplier_range - $ls->multiplier_step) );
+        $ls->multiplier_step( int(
+            defined $lr->{min} ? ($lr->{max} - $lr->{min}) / 2 : $ls->multiplier_step / 2
+        ) );
 
-        $ls->{prev_check} = 'too many rows';
+        $ls->prev_check('too many rows');
         return 0;
     }
 
     # The above two are more important than skipping the count checks.  Better to
     # have too few rows than too many.
 
-    elsif ($ls->{checked_count} > 10) {
+    elsif ($ls->checked_count > 10) {
         # Checked too many times: Just process it
-        $ls->{prev_check} = 'too many checks';
+        $ls->prev_check('too many checks');
         return 1;
     }
-    elsif ($ls->{end} >= $ls->{max_end}) {
+    elsif ($ls->end >= $ls->max_end) {
         # At the end: Just process it
-        $ls->{prev_check} = 'at max_end';
+        $ls->prev_check('at max_end');
         return 1;
     }
     elsif ($chunk_percent < $self->min_chunk_percent) {
         # Too few rows: Keep the start ID and accelerate towards a better endpoint
         $self->_print_debug_status('expanded');
 
-        $ls->{timer} = time;
+        $ls->_mark_timer;
 
         # If we have a min/max range, bisect down the middle.  If not, keep
         # accelerating the stepping.
-        $ls->{last_range}{min} = $ls->{multiplier_range} if !defined $ls->{last_range}{min} || $ls->{multiplier_range} > $ls->{last_range}{min};
-        $ls->{multiplier_step} = int( defined $ls->{last_range}{max} ?
-            ($ls->{last_range}{max} - $ls->{last_range}{min}) / 2 :
-            $ls->{multiplier_step} * 2
-        );
-        $ls->{prev_check} = 'too few rows';
+        my $lr = $ls->last_range;
+        $lr->{min} = $ls->multiplier_range if !defined $lr->{min} || $ls->multiplier_range > $lr->{min};
+        $ls->multiplier_step( int(
+            defined $lr->{max} ? ($lr->{max} - $lr->{min}) / 2 : $ls->multiplier_step * 2
+        ) );
+
+        $ls->prev_check('too few rows');
         return 0;
     }
 
-    $ls->{prev_check} = 'nothing wrong';
+    $ls->prev_check('nothing wrong');
     return 1;
 }
 
@@ -1471,17 +1361,17 @@ See L</target_time>.
 
 sub _runtime_checker {
     my ($self) = @_;
-    my $ls = $self->_loop_state;
+    my $ls = $self->loop_state;
     return unless $self->target_time;
-    return unless $ls->{chunk_size} && $ls->{prev_runtime};  # prevent DIV/0
+    return unless $ls->chunk_size && $ls->prev_runtime;  # prevent DIV/0
 
-    my $timings = $ls->{last_timings};
+    my $timings = $ls->last_timings;
 
     my $new_timing = {
-        runtime     => $ls->{prev_runtime},
-        chunk_count => $ls->{chunk_count} || $ls->{chunk_size},
+        runtime     => $ls->prev_runtime,
+        chunk_count => $ls->chunk_count || $ls->chunk_size,
     };
-    $new_timing->{chunk_per} = $new_timing->{chunk_count} / $ls->{chunk_size};
+    $new_timing->{chunk_per} = $new_timing->{chunk_count} / $ls->chunk_size;
 
     # Rowtime: a measure of how much of the chunk_size actually impacted the runtime
     $new_timing->{rowtime} = $new_timing->{runtime} / $new_timing->{chunk_per};
@@ -1495,7 +1385,7 @@ sub _runtime_checker {
     my $avg_rowtime   = sum(map { $_->{rowtime} } @$timings) / $ttl;
     my $adjust_factor = $self->target_time / $avg_rowtime;
 
-    my $new_target_chunk_size = $ls->{chunk_size};
+    my $new_target_chunk_size = $ls->chunk_size;
     my $adjective;
     if    ($adjust_factor > 1.05) {
         # Too fast: Raise the chunk size
@@ -1509,10 +1399,10 @@ sub _runtime_checker {
     elsif ($adjust_factor < 0.95) {
         # Too slow: Lower the chunk size
 
-        return unless $ls->{prev_runtime} > $self->target_time;  # last runtime must actually be too high
+        return unless $ls->prev_runtime > $self->target_time;  # last runtime must actually be too high
 
         $new_target_chunk_size *=
-            ($ls->{prev_runtime} < $self->target_time * 3) ?
+            ($ls->prev_runtime < $self->target_time * 3) ?
             max(0.5, $adjust_factor) :  # never less than half...
             $adjust_factor              # ...unless the last runtime was waaaay off
         ;
@@ -1521,7 +1411,7 @@ sub _runtime_checker {
     }
 
     $new_target_chunk_size = int $new_target_chunk_size;
-    return if $new_target_chunk_size == $ls->{chunk_size};  # either nothing changed or it's too miniscule
+    return if $new_target_chunk_size == $ls->chunk_size;  # either nothing changed or it's too miniscule
     return if $new_target_chunk_size < 1;
 
     # Print out a debug line, if enabled
@@ -1534,14 +1424,14 @@ sub _runtime_checker {
             "Processing too %s, avg %4s of target time, adjusting chunk size from %s to %s",
             $adjective,
             $percent->format( 1 / $adjust_factor ),
-            $integer->format( $ls->{chunk_size} ),
+            $integer->format( $ls->chunk_size ),
             $integer->format( $new_target_chunk_size ),
         ) );
     }
 
     # Change it!
-    $ls->{chunk_size} = $new_target_chunk_size;
-    $ls->{last_timings} = [] if $adjective eq 'fast';  # never snowball too quickly
+    $ls->chunk_size($new_target_chunk_size);
+    $ls->_reset_last_timings if $adjective eq 'fast';  # never snowball too quickly
     return 1;
 }
 
@@ -1553,11 +1443,11 @@ Increments the progress bar.
 
 sub _increment_progress {
     my ($self) = @_;
-    my $ls = $self->_loop_state;
-    my $progress = $ls->{progress_bar};
+    my $ls = $self->loop_state;
+    my $progress = $ls->progress_bar;
 
-    my $so_far = $ls->{end} - $self->min_id + 1;
-    $progress->target($so_far+1) if $ls->{end} > $self->max_id;
+    my $so_far = $ls->end - $self->min_id + 1;
+    $progress->target($so_far+1) if $ls->end > $self->max_id;
     $progress->update($so_far);
 }
 
@@ -1565,7 +1455,7 @@ sub _increment_progress {
 
 Prints out a standard debug status line, if debug is enabled.  What it prints is
 generally uniform, but it depends on the processing action.  Most of the data is
-pulled from L</_loop_state>.
+pulled from L</loop_state>.
 
 =cut
 
@@ -1573,7 +1463,7 @@ sub _print_debug_status {
     my ($self, $action) = @_;
     return unless $self->debug;
 
-    my $ls    = $self->_loop_state;
+    my $ls    = $self->loop_state;
     my $sleep = $self->sleep || 0;
 
     # CLDR number formatters
@@ -1586,30 +1476,30 @@ sub _print_debug_status {
 
     my $message = sprintf(
         'IDs %6u to %6u %9s, %9s rows found',
-        $ls->{start}, $ls->{end}, $action,
-        $integer->format( $ls->{chunk_count} ),
+        $ls->start, $ls->end, $action,
+        $integer->format( $ls->chunk_count ),
     );
 
     $message .= sprintf(
         ' (%4s of chunk size)',
-        $percent->format( $ls->{chunk_count} / $ls->{chunk_size} ),
-    ) if $ls->{chunk_count};
+        $percent->format( $ls->chunk_count / $ls->chunk_size ),
+    ) if $ls->chunk_count;
 
     if ($action eq 'processed') {
         $message .= $sleep ?
             sprintf(
                 ', %5s+%s sec runtime+sleep',
-                $decimal->format( $ls->{prev_runtime} ),
+                $decimal->format( $ls->prev_runtime ),
                 $decimal->format( $sleep )
             ) :
             sprintf(
                 ', %5s sec runtime',
-                $decimal->format( $ls->{prev_runtime} ),
+                $decimal->format( $ls->prev_runtime ),
             )
         ;
     }
 
-    return $ls->{progress_bar}->message($message);
+    return $ls->progress_bar->message($message);
 }
 
 =head1 SEE ALSO
