@@ -33,7 +33,7 @@ This is the loop state object used during BatchChunker runs.  It only exists wit
 BatchChunker execution loop, and would generally only be accessible through the coderef
 or method referenced within that loop.
 
-This is a quasi-private object and it's API may be subject to change, but the module is
+This is a quasi-private object and its API may be subject to change, but the module is
 in a pretty stable state at this point.  While permissions are available to write to
 the attributes, it is highly recommended to not do so unless you know exactly what you
 doing.  These are mostly available for introspection of loop progress.

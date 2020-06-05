@@ -161,6 +161,11 @@ It's still valid to include L</min_stmt>, L</max_stmt>, and/or L</count_stmt> in
 constructor to enable features like L<max ID recalculation|/process_past_max> or
 L<chunk resizing|/min_chunk_percent>.
 
+If you're not going to include any min/max statements for L</calculate_ranges>, you will
+need to set L</min_id> and L</max_id> yourself, either in the constructor or before the
+L</execute> call.  Using L</construct_and_execute> is also not an option in this case, as
+this tries to call L</calculate_ranges> without a way to do so.
+
 =head3 TL;DR Version
 
     $stmt                             = Active DBI Processing
