@@ -1010,7 +1010,7 @@ sub execute {
     while ($ls->prev_end < $ls->max_end || $ls->start) {
         $ls->multiplier_range($ls->multiplier_range + $ls->multiplier_step);
         $ls->start           ($ls->prev_end + 1) unless defined $ls->start;   # this could be already set because of early 'next' calls
-        $ls->end             ($ls->start + $ls->multiplier_range * $ls->chunk_size - 1);
+        $ls->end             ($ls->start + ceil($ls->multiplier_range * $ls->chunk_size) - 1);  # ceil, because multiplier_* could be fractional
         $ls->chunk_count     (undef);
 
         next unless $self->_process_past_max_checker;
@@ -1307,9 +1307,9 @@ sub _chunk_count_checker {
         my $lr = $ls->last_range;
         $lr->{max} = $ls->multiplier_range if !defined $lr->{max} || $ls->multiplier_range < $lr->{max};
         $ls->multiplier_range( $lr->{min} || ($ls->multiplier_range - $ls->multiplier_step) );
-        $ls->multiplier_step( int(
+        $ls->multiplier_step(
             defined $lr->{min} ? ($lr->{max} - $lr->{min}) / 2 : $ls->multiplier_step / 2
-        ) );
+        );
 
         $ls->prev_check('too many rows');
         return 0;
@@ -1338,9 +1338,9 @@ sub _chunk_count_checker {
         # accelerating the stepping.
         my $lr = $ls->last_range;
         $lr->{min} = $ls->multiplier_range if !defined $lr->{min} || $ls->multiplier_range > $lr->{min};
-        $ls->multiplier_step( int(
+        $ls->multiplier_step(
             defined $lr->{max} ? ($lr->{max} - $lr->{min}) / 2 : $ls->multiplier_step * 2
-        ) );
+        );
 
         $ls->prev_check('too few rows');
         return 0;

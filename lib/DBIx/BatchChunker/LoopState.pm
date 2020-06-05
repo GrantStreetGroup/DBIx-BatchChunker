@@ -150,8 +150,8 @@ has max_end => (
 
 =head2 last_range
 
-A hashref of keys used for the bisecting of one block.  Cleared out after a block has
-been processed or skipped.
+A hashref of min/max values used for the bisecting of one block, measured in chunk
+multipliers.  Cleared out after a block has been processed or skipped.
 
 =cut
 
@@ -186,13 +186,13 @@ Resets after block processing.
 
 has multiplier_range => (
     is       => 'rw',
-    isa      => Int,
+    isa      => PositiveOrZeroNum,
     default  => 0,
 );
 
 =head2 multiplier_step
 
-Determines how fast multiplier_range increases, so that chunk resizing happens at an
+Determines how fast L</multiplier_range> increases, so that chunk resizing happens at an
 accelerated pace.  Speeds or slows depending on what kind of limits the chunk count
 checks are hitting.  Resets after block processing.
 
@@ -200,7 +200,7 @@ checks are hitting.  Resets after block processing.
 
 has multiplier_step => (
     is       => 'rw',
-    isa      => Int,
+    isa      => PositiveNum,
     default  => 1,
 );
 

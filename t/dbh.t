@@ -81,6 +81,12 @@ subtest 'Active DBI Processing (+ sleep)' => sub {
     cmp_ok($calls,      '==', $multiplier_range,       'Right number of calls');
     cmp_ok($total_time, '>=', $multiplier_range * 0.1, 'Slept ok');
     cmp_ok($total_time, '<',  $multiplier_range * 0.5, 'Did not oversleep');
+
+    # Remove the callback completely
+    my $dbh = $conn->dbh;
+    delete $dbh->{Callbacks}{ChildCallbacks}{execute};
+    delete $dbh->{Callbacks}{ChildCallbacks};
+    delete $dbh->{Callbacks};
 };
 
 subtest 'Query DBI Processing (+ min_chunk_percent)' => sub {
@@ -334,6 +340,54 @@ subtest 'Retry testing + single_rows' => sub {
     # Process
     $batch_chunker->execute;
     cmp_ok($calls, '>=', $rightish_calls, 'Rightish number of calls');
+};
+
+subtest 'Chunk resizing with non-unique IDs' => sub {
+    my $calls = 0;
+
+    # Constructor
+    my $batch_chunker = DBIx::BatchChunker->new(
+        chunk_size => $CHUNK_SIZE,
+
+        dbi_connector => $conn,
+        id_name    => 'cd',
+        min_stmt   => 'SELECT MIN(cd) FROM track',
+        max_stmt   => 'SELECT MAX(cd) FROM track',
+        count_stmt => 'SELECT COUNT(*) FROM track WHERE cd BETWEEN ? AND ?',
+        stmt       => 'SELECT ?, ?',
+
+        target_time => 0,
+        sleep       => 0.1,
+    );
+
+    # Can't exactly make 'stmt' an "active" statement, but we can add a callback
+    $conn->dbh->{Callbacks} = {
+        ChildCallbacks => {
+            execute => sub { $calls++; return },  # DBI callback cannot return anything
+        },
+    };
+
+    # Calculate
+    ok($batch_chunker->calculate_ranges, 'calculate_ranges ok');
+    ok($batch_chunker->min_id,           'min_id ok');
+    ok($batch_chunker->max_id,           'max_id ok');
+
+    my $range = $batch_chunker->max_id - $batch_chunker->min_id + 1;
+    my $multiplier_range = ceil($range / $CHUNK_SIZE);
+
+    # Process
+    my $start_time = time;
+    $batch_chunker->execute;
+    my $total_time = time - $start_time;
+    cmp_ok($calls,      '>=', $multiplier_range,       'Rightish number of calls');
+    cmp_ok($total_time, '>=', $multiplier_range * 0.1, 'Slept ok');
+    cmp_ok($total_time, '<',  $multiplier_range * 0.5, 'Did not oversleep');
+
+    # Remove the callback completely
+    my $dbh = $conn->dbh;
+    delete $dbh->{Callbacks}{ChildCallbacks}{execute};
+    delete $dbh->{Callbacks}{ChildCallbacks};
+    delete $dbh->{Callbacks};
 };
 
 ############################################################
