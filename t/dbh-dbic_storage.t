@@ -78,6 +78,12 @@ subtest 'Active DBI Processing (+ sleep)' => sub {
     cmp_ok($calls,      '==', $multiplier_range,       'Right number of calls');
     cmp_ok($total_time, '>=', $multiplier_range * 0.1, 'Slept ok');
     cmp_ok($total_time, '<',  $multiplier_range * 0.5, 'Did not oversleep');
+
+    # Remove the callback completely
+    my $dbh = $storage->dbh;
+    delete $dbh->{Callbacks}{ChildCallbacks}{execute};
+    delete $dbh->{Callbacks}{ChildCallbacks};
+    delete $dbh->{Callbacks};
 };
 
 subtest 'Query DBI Processing (+ min_chunk_percent)' => sub {
@@ -98,8 +104,8 @@ subtest 'Query DBI Processing (+ min_chunk_percent)' => sub {
             isa_ok($sth, ['DBI::st'], '$sth');
             $calls++;
 
-            my $ls     = $bc->_loop_state;
-            my $range  = $ls->{end} - $ls->{start} + 1;
+            my $ls     = $bc->loop_state;
+            my $range  = $ls->end - $ls->start + 1;
             $max_range = $range if $range > $max_range;
             note explain $ls if $BATCHCHUNK_TEST_DEBUG;
         },
@@ -150,7 +156,7 @@ subtest 'Query DBI Processing + single_row (+ rsc)' => sub {
             $calls++;
 
             if ($BATCHCHUNK_TEST_DEBUG) {
-                note explain $bc->_loop_state;
+                note explain $bc->loop_state;
                 note explain $row;
             }
         },
@@ -187,8 +193,8 @@ subtest 'DIY Processing (+ min_chunk_percent)' => sub {
             ok(looks_like_number $end,    '$end   is a number');
             $calls++;
 
-            my $ls     = $bc->_loop_state;
-            my $range  = $ls->{end} - $ls->{start} + 1;
+            my $ls     = $bc->loop_state;
+            my $range  = $ls->end - $ls->start + 1;
             $max_range = $range if $range > $max_range;
             note explain $ls if $BATCHCHUNK_TEST_DEBUG;
         },
@@ -253,6 +259,12 @@ subtest 'Retry testing' => sub {
     # Process
     $batch_chunker->execute;
     cmp_ok($calls, '==', $multiplier_range * 3, 'Right number of calls');
+
+    # Remove the callback completely
+    my $dbh = $storage->dbh;
+    delete $dbh->{Callbacks}{ChildCallbacks}{execute};
+    delete $dbh->{Callbacks}{ChildCallbacks};
+    delete $dbh->{Callbacks};
 };
 
 subtest 'Retry testing + single_rows' => sub {
@@ -278,7 +290,7 @@ subtest 'Retry testing + single_rows' => sub {
             $calls++;
 
             if ($BATCHCHUNK_TEST_DEBUG) {
-                note explain $bc->_loop_state;
+                note explain $bc->loop_state;
                 note explain $row;
             }
 
