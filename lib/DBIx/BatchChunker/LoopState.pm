@@ -55,8 +55,8 @@ has batch_chunker => (
 
 =head2 progress_bar
 
-The progress bar being used in the loop.  This may be different than L</progress_bar>,
-since it could be auto-generated.
+The progress bar being used in the loop.  This may be different than
+L<DBIx::BatchChunker/progress_bar>, since it could be auto-generated.
 
 If you're trying to access the progress bar for debug or display purposes, it's best to
 use this attribute:
