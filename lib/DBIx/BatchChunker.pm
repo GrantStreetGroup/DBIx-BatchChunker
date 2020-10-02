@@ -1015,7 +1015,12 @@ sub execute {
     while ($ls->prev_end < $ls->max_end || $ls->start) {
         $ls->multiplier_range($ls->multiplier_range + $ls->multiplier_step);
         $ls->start           ($ls->prev_end + 1) unless defined $ls->start;   # this could be already set because of early 'next' calls
-        $ls->end             ($ls->start + ceil($ls->multiplier_range * $ls->chunk_size) - 1);  # ceil, because multiplier_* could be fractional
+        $ls->end(
+            min(
+                $ls->start + ceil($ls->multiplier_range * $ls->chunk_size) - 1, # ceil, because multiplier_* could be fractional
+                $ls->max_end, # ensure we never exceed max_end
+            )
+        );
         $ls->chunk_count     (undef);
 
         next unless $self->_process_past_max_checker;
