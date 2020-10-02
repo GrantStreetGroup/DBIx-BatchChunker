@@ -9,6 +9,7 @@ use Test2::Tools::Compare;
 use Test2::Tools::Exception;
 use Test2::Tools::Explain;
 
+use List::Util   qw( max );
 use POSIX        qw( ceil );
 use Scalar::Util qw( looks_like_number );
 use Time::HiRes  qw( time sleep );
@@ -29,6 +30,7 @@ my $dbh = $schema->storage->dbh;
 
 subtest 'Active DBI Processing (+ sleep)' => sub {
     my $calls = 0;
+    my $max_id = 0;
 
     # Can't exactly make it an "active" statement
     my $sth = $dbh->prepare('SELECT ?, ?');
@@ -53,7 +55,12 @@ subtest 'Active DBI Processing (+ sleep)' => sub {
     # mode, but we can tweak the $dbh.
     $batch_chunker->dbi_connector->{_dbh}{Callbacks} = {
         ChildCallbacks => {
-            execute => sub { $calls++; return },  # DBI callback cannot return anything
+            execute => sub {
+                my ($sth, $start, $end) = @_;
+                $max_id = max($max_id, $end);
+                $calls++;
+                return;    # DBI callback cannot return anything
+            },
         },
     };
 
@@ -72,6 +79,13 @@ subtest 'Active DBI Processing (+ sleep)' => sub {
     cmp_ok($calls,      '==', $multiplier_range,       'Right number of calls');
     cmp_ok($total_time, '>=', $multiplier_range * 0.1, 'Slept ok');
     cmp_ok($total_time, '<',  $multiplier_range * 0.5, 'Did not oversleep');
+    is($max_id, $batch_chunker->max_id, 'final chunk ends at max_id');
+
+    # Remove the callback completely
+    my $dbh = $batch_chunker->dbi_connector->{_dbh};
+    delete $dbh->{Callbacks}{ChildCallbacks}{execute};
+    delete $dbh->{Callbacks}{ChildCallbacks};
+    delete $dbh->{Callbacks};
 };
 
 subtest 'Query DBI Processing (+ min_chunk_percent)' => sub {
@@ -93,7 +107,9 @@ subtest 'Query DBI Processing (+ min_chunk_percent)' => sub {
             isa_ok($sth, ['DBI::st'], '$sth');
             $calls++;
 
-            my $ls     = $bc->loop_state;
+            my $ls = $bc->loop_state;
+            cmp_ok($ls->end, '<=', $bc->max_id, "loop end doesn't exceed max_id");
+
             my $range  = $ls->end - $ls->start + 1;
             $max_range = $range if $range > $max_range;
             note explain $ls if $BATCHCHUNK_TEST_DEBUG;
@@ -146,8 +162,11 @@ subtest 'Query DBI Processing + single_row (+ rsc)' => sub {
             }, '$row + keys');
             $calls++;
 
+            my $ls = $bc->loop_state;
+            cmp_ok($ls->end, '<=', $bc->max_id, "loop end doesn't exceed max_id");
+
             if ($BATCHCHUNK_TEST_DEBUG) {
-                note explain $bc->loop_state;
+                note explain $ls;
                 note explain $row;
             }
         },
@@ -187,7 +206,9 @@ subtest 'DIY Processing (+ min_chunk_percent)' => sub {
             ok(looks_like_number $end,    '$end   is a number');
             $calls++;
 
-            my $ls     = $bc->loop_state;
+            my $ls = $bc->loop_state;
+            cmp_ok($ls->end, '<=', $bc->max_id, "loop end doesn't exceed max_id");
+
             my $range  = $ls->end - $ls->start + 1;
             $max_range = $range if $range > $max_range;
             note explain $ls if $BATCHCHUNK_TEST_DEBUG;
