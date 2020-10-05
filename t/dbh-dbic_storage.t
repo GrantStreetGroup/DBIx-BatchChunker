@@ -41,9 +41,10 @@ my $track1_count = $track_rs->count;
 
 my $storage = $schema->storage;
 
+$Data::Dumper::Maxdepth = 1;
+
 subtest 'Active DBI Processing (+ sleep)' => sub {
-    my $calls = 0;
-    my $max_id = 0;
+    my ($calls, $max_end) = (0, 0);
 
     # Constructor
     my $batch_chunker = DBIx::BatchChunker->new(
@@ -63,7 +64,7 @@ subtest 'Active DBI Processing (+ sleep)' => sub {
         ChildCallbacks => {
             execute => sub {
                 my ($sth, $start, $end) = @_;
-                $max_id = max($max_id, $end);
+                $max_end = max($max_end, $end);
                 $calls++;
                 return;    # DBI callback cannot return anything
             },
@@ -83,9 +84,9 @@ subtest 'Active DBI Processing (+ sleep)' => sub {
     $batch_chunker->execute;
     my $total_time = time - $start_time;
     cmp_ok($calls,      '==', $multiplier_range,       'Right number of calls');
+    cmp_ok($max_end,    '==', $batch_chunker->max_id,  'Final chunk ends at max_id');
     cmp_ok($total_time, '>=', $multiplier_range * 0.1, 'Slept ok');
     cmp_ok($total_time, '<',  $multiplier_range * 0.5, 'Did not oversleep');
-    is($max_id, $batch_chunker->max_id, 'Final chunk ends at max_id');
 
     # Remove the callback completely
     my $dbh = $storage->dbh;
@@ -95,8 +96,7 @@ subtest 'Active DBI Processing (+ sleep)' => sub {
 };
 
 subtest 'Query DBI Processing (+ min_chunk_percent)' => sub {
-    my $calls     = 0;
-    my $max_range = 0;
+    my ($calls, $max_end, $max_range) = (0, 0, 0);
 
     # Constructor
     my $batch_chunker = DBIx::BatchChunker->new(
@@ -113,10 +113,10 @@ subtest 'Query DBI Processing (+ min_chunk_percent)' => sub {
             $calls++;
 
             my $ls = $bc->loop_state;
-            cmp_ok($ls->end, '<=', $bc->max_id, "loop end doesn't exceed max_id");
+            $max_end = max($max_end, $ls->end);
 
             my $range  = $ls->end - $ls->start + 1;
-            $max_range = $range if $range > $max_range;
+            $max_range = max($max_range, $range);
             note explain $ls if $BATCHCHUNK_TEST_DEBUG;
         },
 
@@ -137,12 +137,13 @@ subtest 'Query DBI Processing (+ min_chunk_percent)' => sub {
 
     # Process
     $batch_chunker->execute;
-    cmp_ok($calls,      '<', $multiplier_range, 'Fewer coderef calls than normal');
-    cmp_ok($max_range,  '>', $CHUNK_SIZE,       'Expanded chunk at least once');
+    cmp_ok($calls,      '<',  $multiplier_range,      'Fewer coderef calls than normal');
+    cmp_ok($max_end,    '==', $batch_chunker->max_id, 'Final chunk ends at max_id');
+    cmp_ok($max_range,  '>',  $CHUNK_SIZE,            'Expanded chunk at least once');
 };
 
 subtest 'Query DBI Processing + single_row (+ rsc)' => sub {
-    my $calls = 0;
+    my ($calls, $max_end) = (0, 0);
 
     # Constructor
     my $batch_chunker = DBIx::BatchChunker->new(
@@ -166,7 +167,7 @@ subtest 'Query DBI Processing + single_row (+ rsc)' => sub {
             $calls++;
 
             my $ls = $bc->loop_state;
-            cmp_ok($ls->end, '<=', $bc->max_id, "loop end doesn't exceed max_id");
+            $max_end = max($max_end, $ls->end);
 
             if ($BATCHCHUNK_TEST_DEBUG) {
                 note explain $ls;
@@ -185,12 +186,12 @@ subtest 'Query DBI Processing + single_row (+ rsc)' => sub {
 
     # Process
     $batch_chunker->execute;
-    cmp_ok($calls, '==', $track1_count, 'Right number of calls');
+    cmp_ok($calls,   '==', $track1_count,          'Right number of calls');
+    cmp_ok($max_end, '==', $batch_chunker->max_id, 'Final chunk ends at max_id');
 };
 
 subtest 'DIY Processing (+ min_chunk_percent)' => sub {
-    my $calls = 0;
-    my $max_range = 0;
+    my ($calls, $max_end, $max_range) = (0, 0, 0);
 
     # Constructor
     my $batch_chunker = DBIx::BatchChunker->new(
@@ -207,10 +208,10 @@ subtest 'DIY Processing (+ min_chunk_percent)' => sub {
             $calls++;
 
             my $ls = $bc->loop_state;
-            cmp_ok($ls->end, '<=', $bc->max_id, "loop end doesn't exceed max_id");
+            $max_end = max($max_end, $ls->end);
 
             my $range  = $ls->end - $ls->start + 1;
-            $max_range = $range if $range > $max_range;
+            $max_range = max($max_range, $range);
             note explain $ls if $BATCHCHUNK_TEST_DEBUG;
         },
 
@@ -231,13 +232,13 @@ subtest 'DIY Processing (+ min_chunk_percent)' => sub {
 
     # Process
     $batch_chunker->execute;
-    cmp_ok($calls,      '<', $multiplier_range, 'Fewer coderef calls than normal');
-    cmp_ok($max_range,  '>', $CHUNK_SIZE,       'Expanded chunk at least once');
+    cmp_ok($calls,      '<',  $multiplier_range,      'Fewer coderef calls than normal');
+    cmp_ok($max_end,    '==', $batch_chunker->max_id, 'Final chunk ends at max_id');
+    cmp_ok($max_range,  '>',  $CHUNK_SIZE,            'Expanded chunk at least once');
 };
 
 subtest 'Retry testing' => sub {
-    my $calls = 0;
-    my $max_id = 0;
+    my ($calls, $max_end) = (0, 0);
 
     # Constructor
     my $batch_chunker = DBIx::BatchChunker->new(
@@ -258,7 +259,7 @@ subtest 'Retry testing' => sub {
         ChildCallbacks => {
             execute => sub {
                 my ($sth, $start, $end) = @_;
-                $max_id = max($max_id, $end);
+                $max_end = max($max_end, $end);
                 $calls++;
                 die "Don't wanna execute right now" if $calls % 3;  # fail 2/3rds of the calls
                 return;  # DBI callback cannot return anything
@@ -276,8 +277,8 @@ subtest 'Retry testing' => sub {
 
     # Process
     $batch_chunker->execute;
-    cmp_ok($calls, '==', $multiplier_range * 3, 'Right number of calls');
-    is($max_id, $batch_chunker->max_id, "final chunk doesn't exceed max_id");
+    cmp_ok($calls,   '==', $multiplier_range * 3,  'Right number of calls');
+    cmp_ok($max_end, '==', $batch_chunker->max_id, 'Final chunk ends at max_id');
 
     # Remove the callback completely
     my $dbh = $storage->dbh;
@@ -287,7 +288,7 @@ subtest 'Retry testing' => sub {
 };
 
 subtest 'Retry testing + single_rows' => sub {
-    my $calls = 0;
+    my ($calls, $max_end) = (0, 0);
 
     # Constructor
     my $batch_chunker = DBIx::BatchChunker->new(
@@ -309,7 +310,7 @@ subtest 'Retry testing + single_rows' => sub {
             $calls++;
 
             my $ls = $bc->loop_state;
-            cmp_ok($ls->end, '<=', $bc->max_id, "loop end doesn't exceed max_id");
+            $max_end = max($max_end, $ls->end);
 
             if ($BATCHCHUNK_TEST_DEBUG) {
                 note explain $ls;
@@ -336,7 +337,8 @@ subtest 'Retry testing + single_rows' => sub {
 
     # Process
     $batch_chunker->execute;
-    cmp_ok($calls, '>=', $rightish_calls, 'Rightish number of calls');
+    cmp_ok($calls,   '>=', $rightish_calls,        'Rightish number of calls');
+    cmp_ok($max_end, '==', $batch_chunker->max_id, 'Final chunk ends at max_id');
 };
 
 ############################################################
