@@ -1262,6 +1262,9 @@ sub _process_past_max_checker {
         $ls->max_end($self->max_id);
     }
 
+    # Run another boundary check with the new max_end value
+    $ls->end( min($ls->end, $ls->max_end) );
+
     return 1;
 }
 
