@@ -233,7 +233,7 @@ has dbic_retry_opts => (
     is        => 'ro',
     isa       => HashRef,
     required  => 0,
-    predicate => 1,
+    predicate => '_has_dbic_retry_opts',
 );
 
 sub _dbic_block_runner {
@@ -242,7 +242,7 @@ sub _dbic_block_runner {
     my $storage = $self->dbic_storage;
 
     # Block running disabled
-    unless ($self->has_dbic_retry_opts) {
+    unless ($self->_has_dbic_retry_opts) {
         return $storage->txn_do($coderef) if $method eq 'txn';
         return $storage->dbh_do($coderef);
     }
