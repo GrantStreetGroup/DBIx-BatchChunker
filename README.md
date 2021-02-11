@@ -4,7 +4,7 @@ DBIx::BatchChunker - Run large database changes safely
 
 # VERSION
 
-version v0.940.2
+version v0.940.3
 
 # SYNOPSIS
 
@@ -357,9 +357,8 @@ miss any new rows that come up between ["calculate\_ranges"](#calculate_ranges) 
 
 Turned off by default.
 
-**NOTE:** If your RDBMS has a problem with a number as high as whatever [max\_integer](https://metacpan.org/pod/Data%3A%3AFloat#max_integer)
-reports, you may want to set the `$DB_MAX_ID` global variable in this module to
-something lower.
+**NOTE:** If your RDBMS has a problem with a number as high as whatever `~0` reports,
+you may want to set the `$DB_MAX_ID` global variable in this module to something lower.
 
 ### single\_rows
 
@@ -563,7 +562,7 @@ Grant Street Group <developers@grantstreet.com>
 
 # COPYRIGHT AND LICENSE
 
-This software is Copyright (c) 2018 - 2020 by Grant Street Group.
+This software is Copyright (c) 2018 - 2021 by Grant Street Group.
 
 This is free software, licensed under:
 
