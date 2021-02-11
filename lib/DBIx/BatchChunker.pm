@@ -13,7 +13,6 @@ use Types::Standard        qw( Any Item Str Num Bool Undef ArrayRef HashRef Code
 use Types::Common::Numeric qw( PositiveInt PositiveOrZeroInt PositiveOrZeroNum );
 use Type::Utils;
 
-use Data::Float;
 use List::Util        1.33 (qw( min max sum any first ));  # has any/all/etc.
 use POSIX                   qw( ceil );
 use Scalar::Util            qw( blessed weaken );
@@ -25,7 +24,7 @@ use DBIx::BatchChunker::LoopState;
 # Don't export the above, but don't conflict with StrictConstructor, either
 use namespace::clean -except => [qw< new meta >];
 
-our $DB_MAX_ID = Data::Float::max_integer;  # used for progress_past_max
+our $DB_MAX_ID = ~0;  # used for progress_past_max
 
 =encoding utf8
 
@@ -578,9 +577,8 @@ miss any new rows that come up between L</calculate_ranges> and the end of the l
 
 Turned off by default.
 
-B<NOTE:> If your RDBMS has a problem with a number as high as whatever L<max_integer|Data::Float/max_integer>
-reports, you may want to set the C<$DB_MAX_ID> global variable in this module to
-something lower.
+B<NOTE:> If your RDBMS has a problem with a number as high as whatever C<~0> reports,
+you may want to set the C<$DB_MAX_ID> global variable in this module to something lower.
 
 =cut
 

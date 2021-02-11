@@ -1,6 +1,5 @@
 requires 'CLDR::Number';
 requires 'DBIx::Connector::Retry';
-requires 'Data::Float';
 requires 'List::Util', '1.33';
 requires 'Moo';
 requires 'MooX::StrictConstructor';
