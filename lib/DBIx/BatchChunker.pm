@@ -9,11 +9,13 @@ use MooX::StrictConstructor;
 
 use CLDR::Number;
 
-use Types::Standard        qw( Any Item Str Num Bool Undef ArrayRef HashRef CodeRef InstanceOf Tuple Maybe Optional slurpy );
-use Types::Common::Numeric qw( PositiveInt PositiveOrZeroInt PositiveOrZeroNum );
+use Types::Standard        qw( Str Bool Undef ArrayRef HashRef CodeRef InstanceOf Tuple Maybe Optional slurpy );
+use Types::Numbers         qw( NumRange UnsignedInt PerlSafeInt PositiveInt PositiveOrZeroNum );
 use Type::Utils;
 
 use List::Util        1.33 (qw( min max sum any first ));  # has any/all/etc.
+use Math::BigInt upgrade => 'Math::BigFloat';
+use Math::BigFloat;
 use POSIX                   qw( ceil );
 use Scalar::Util            qw( blessed weaken );
 use Term::ProgressBar 2.14;                          # with silent option
@@ -513,7 +515,7 @@ small, processing may be unnecessarily slow.
 =cut
 
 has chunk_size => (
-    is       => 'ro',
+    is       => 'rw',
     isa      => PositiveInt,
     required => 0,
     default  => 1000,
@@ -636,11 +638,9 @@ If DBIC processing isn't used, L</count_stmt> is also required to enable chunk r
 has min_chunk_percent => (
     is       => 'ro',
     isa      => Type::Utils::declare(
-        name       => 'PositiveZeroToOneNum',
-        parent     => Num,
-        constraint => sub { $_ >= 0 && $_ <= 1 },
-        inlined    => sub { undef, qq($_ >= 0 && $_ <= 1) },
-        message    => sub { 'Must be a number between 0 and 1' },
+        name    => 'PositiveZeroToOneNum',
+        parent  => NumRange->parameterize(0, 1),
+        message => sub { 'Must be a number between 0 and 1' },
     ),
     required => 0,
     default  => 0.5,
@@ -661,13 +661,82 @@ use L</calculate_ranges> to fill in these values right before running the loop.
 
 has min_id => (
     is       => 'rw',
-    isa      => PositiveOrZeroInt,
+    isa      => UnsignedInt,
 );
 
 has max_id => (
     is       => 'rw',
-    isa      => PositiveOrZeroInt,
+    isa      => UnsignedInt,
 );
+
+# Big number handling
+has _use_bignums => (
+    is       => 'rw',
+    isa      => Bool,
+    default  => 0,
+    trigger  => \&_upgrade_attrs_to_bigint,
+);
+
+my @BIGNUM_BC_ATTRS = (qw< chunk_size min_id max_id >);
+my @BIGNUM_LS_ATTRS = (qw< start end prev_end max_end multiplier_range multiplier_step chunk_size chunk_count >);
+
+sub _check_bignums {
+    my ($self) = shift;
+    return 1 if $self->_use_bignums;  # already checked these
+
+    # Auto-set _use_bignums if we detect that we need it
+    my $set_bignums = 0;
+
+    # If other values are passed, check those, too
+    foreach my $val (@_) {
+        next unless defined $val;
+        $set_bignums = 1 if blessed $val || !PerlSafeInt->check($val);
+    }
+
+    # Check BatchChunker attributes
+    foreach my $attr (@BIGNUM_BC_ATTRS) {
+        my $val = $self->$attr();
+        next unless defined $val;
+        $set_bignums = 1 if blessed $val || !PerlSafeInt->check($val);
+    }
+    $set_bignums = 1 if blessed $DB_MAX_ID || !PerlSafeInt->check($DB_MAX_ID);
+
+    # Check LoopState attributes
+    if (my $ls = $self->loop_state) {
+        foreach my $attr (@BIGNUM_LS_ATTRS) {
+            my $val = $ls->$attr();
+            next unless defined $val;
+            $set_bignums = 1 if blessed $val || !PerlSafeInt->check($val);
+        }
+    }
+
+    $self->_use_bignums(1) if $set_bignums;
+    return $set_bignums;
+}
+
+sub _upgrade_attrs_to_bigint {
+    my ($self, $is_on) = @_;
+    return unless $is_on;
+
+    # Fix BatchChunker attributes
+    foreach my $attr (@BIGNUM_BC_ATTRS) {
+        my $val = $self->$attr();
+        next unless defined $val;  # nothing to upgrade
+        next if blessed $val;      # already upgraded
+        $self->$attr( Math::BigInt->new($val) );
+    }
+    $DB_MAX_ID = Math::BigInt->new($DB_MAX_ID) unless blessed $DB_MAX_ID;
+
+    # Fix LoopState attributes
+    my $ls = $self->loop_state;
+    return unless $ls;
+    foreach my $attr (@BIGNUM_LS_ATTRS) {
+        my $val = $ls->$attr();
+        next unless defined $val;  # nothing to upgrade
+        next if blessed $val;      # already upgraded
+        $ls->$attr( Math::BigInt->new($val) );
+    }
+}
 
 =head3 loop_state
 
@@ -791,6 +860,7 @@ sub BUILD {
     my $self = shift;
     # Make sure id_name gets fixed at the right time
     $self->_fix_id_name( $self->id_name );
+    $self->_check_bignums;
 }
 
 =head1 CONSTRUCTORS
@@ -921,8 +991,19 @@ sub calculate_ranges {
     # Set the ranges and return
     return 0 unless defined $min_id && defined $max_id;
 
-    $self->min_id( int $min_id );
-    $self->max_id( int $max_id );
+    # This would be the primary spot where we notice we need to upgrade, so check the values before
+    # we attempt to mangle them.
+    if ($self->_check_bignums($min_id, $max_id)) {
+        $min_id = Math::BigFloat->new($min_id)->as_int;
+        $max_id = Math::BigFloat->new($max_id)->as_int;
+    }
+    else {
+        $min_id = int $min_id;
+        $max_id = int $max_id;
+    }
+
+    $self->min_id($min_id);
+    $self->max_id($max_id);
 
     return 1;
 }
@@ -976,6 +1057,7 @@ More details can be found in the L</Processing Modes> and L</ATTRIBUTES> section
 
 sub execute {
     my $self = shift;
+    $self->_check_bignums;
 
     my $count;
     if (defined $self->min_id && defined $self->max_id) {
@@ -1068,23 +1150,24 @@ sub _process_block {
     # Figure out if the row count is worth the work
     my $chunk_rs;
     my $count_stmt = $self->count_stmt;
+    my $chunk_count;
     if ($count_stmt && defined $self->dbic_storage) {
         $self->_dbic_block_runner( run => sub {
-            $self->loop_state->chunk_count( $self->dbic_storage->dbh->selectrow_array(
+            $chunk_count = $self->dbic_storage->dbh->selectrow_array(
                 @$count_stmt,
                 (@$count_stmt == 1 ? undef : ()),
                 $ls->start, $ls->end,
-            ) );
+            );
         });
     }
     elsif ($count_stmt) {
-        $ls->chunk_count( $conn->run(sub {
+        $chunk_count = $conn->run(sub {
             $_->selectrow_array(
                 @$count_stmt,
                 (@$count_stmt == 1 ? undef : ()),
                 $ls->start, $ls->end,
             );
-        }) );
+        });
     }
     elsif (defined $rs) {
         $chunk_rs = $rs->search({
@@ -1092,9 +1175,12 @@ sub _process_block {
         });
 
         $self->_dbic_block_runner( run => sub {
-            $self->loop_state->chunk_count( $chunk_rs->count );
+            $chunk_count = $chunk_rs->count;
         });
     }
+
+    $chunk_count = Math::BigInt->new($chunk_count) if $self->_check_bignums($chunk_count);
+    $ls->chunk_count($chunk_count);
 
     return unless $self->_chunk_count_checker;
 
@@ -1234,6 +1320,9 @@ sub _process_past_max_checker {
     }
     $ls->_mark_timer;  # the above query shouldn't impact runtimes
 
+    # Convert $new_max_id if necessary
+    $new_max_id = Math::BigInt->new($new_max_id) if $self->_check_bignums($new_max_id);
+
     if (!$new_max_id || $new_max_id eq '0E0') {
         # No max: No affected rows to change
         $progress->message('No max ID found; nothing left to process...') if $self->debug;
@@ -1244,20 +1333,20 @@ sub _process_past_max_checker {
     }
     elsif ($new_max_id > $self->max_id) {
         # New max ID
-        $progress->message( sprintf 'New max ID set from %u to %u', $self->max_id, $new_max_id ) if $self->debug;
+        $progress->message( sprintf 'New max ID set from %s to %s', $self->max_id, $new_max_id ) if $self->debug;
         $self->max_id($new_max_id);
         $progress->target( $new_max_id - $self->min_id + 1 );
         $progress->update( $progress->last_update );
     }
     elsif ($new_max_id == $self->max_id) {
         # Same max ID
-        $progress->message( sprintf 'Found max ID %u; same as end', $new_max_id ) if $self->debug;
+        $progress->message( sprintf 'Found max ID %s; same as end', $new_max_id ) if $self->debug;
         $ls->max_end($new_max_id);
     }
     else {
         # Max too low
-        $progress->message( sprintf 'Found max ID %u; ignoring...', $new_max_id ) if $self->debug;
-        $ls->max_end($self->max_id);
+        $progress->message( sprintf 'Found max ID %s; ignoring...', $new_max_id ) if $self->debug;
+        $ls->max_end($ls->max_id);
     }
 
     # Run another boundary check with the new max_end value
