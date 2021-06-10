@@ -1602,6 +1602,32 @@ sub _print_debug_status {
     return $ls->progress_bar->message($message);
 }
 
+=head1 CAVEATS
+
+=head2 Big Number Support
+
+If the module detects that the ID numbers are no longer safe for standard Perl NV
+storage, it will automatically switch to using L<Math::BigInt> and L<Math::BigFloat> for
+big number support.  If any blessed numbers are already being used to define the
+attributes, this will also switch on the support.
+
+Setting C<$DBIx::BatchChunker::DB_MAX_ID> to a L<Math::BigInt> is a good way to switch
+this on.  If the IDs are big enough to require big number support, the default value
+(C<~0>) may be too low, and it's recommended that you change this to a higher value,
+anyway, like C< 2 ** 64 > for a C<bigint> ID.
+
+=head2 String-based IDs
+
+If you're working with C<VARCHAR> types or other string-based IDs to represent integers,
+these may be subject to whatever string-based comparison rules your RDBMS uses when
+calculating with C<MIN>/C<MAX> or using C<BETWEEN>.  Row counting and chunk size scaling
+will try to compensate, but will be mixing string-based comparisons from the RDBMS with
+Perl-based integer math.
+
+Using the C<CAST> function may help, but it may also cause critical indexes to be
+ignored, especially if the function is used on the left-hand side against the column.
+Strings with the exact same length may be safe, but YMMV.
+
 =head1 SEE ALSO
 
 L<DBIx::BulkLoader::Mysql>, L<DBIx::Class::BatchUpdate>, L<DBIx::BulkUtil>
