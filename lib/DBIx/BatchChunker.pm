@@ -1574,11 +1574,21 @@ sub _print_debug_status {
         maximum_fraction_digits => 2,
     );
 
-    my $message = sprintf(
-        'IDs %6u to %6u %9s, %9s rows found',
-        $ls->start, $ls->end, $action,
-        $integer->format( $ls->chunk_count ),
-    );
+    my $message;
+    if ($ls->start < 1_000_000_000 && $ls->end < 1_000_000_000) {
+        $message = sprintf(
+            'IDs %6u to %6u %9s, %9s rows found',
+            $ls->start, $ls->end, $action,
+            $integer->format( $ls->chunk_count ),
+        );
+    }
+    else {
+        $message = sprintf(
+            'IDs %s to %s %s, %s rows found',
+            $ls->start, $ls->end, $action,
+            $ls->chunk_count,
+        );
+    }
 
     $message .= sprintf(
         ' (%4s of chunk size)',
@@ -1597,6 +1607,12 @@ sub _print_debug_status {
                 $decimal->format( $ls->prev_runtime ),
             )
         ;
+    }
+
+    # Reduce spacing if the numbers are too large
+    if ($ls->start > 1_000_000_000 || $ls->end > 1_000_000_000) {
+        $message =~ s/\s+/ /g;
+        $message =~ s/\(\s+/\(/g;
     }
 
     return $ls->progress_bar->message($message);
