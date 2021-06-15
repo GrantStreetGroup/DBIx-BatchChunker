@@ -134,22 +134,6 @@ has prev_end => (
     default  => sub { shift->start - 1 },
 );
 
-=head2 max_end
-
-The maximum ending ID.  This will be C<$DB_MAX_ID> if L</process_past_max> is set.
-
-=cut
-
-has max_end => (
-    is       => 'rw',
-    isa      => UnsignedInt,
-    lazy     => 1,
-    default  => sub {
-        my $bc = shift->batch_chunker;
-        $bc->process_past_max ? $DBIx::BatchChunker::DB_MAX_ID : $bc->max_id
-    },
-);
-
 =head2 last_range
 
 A hashref of min/max values used for the bisecting of one block, measured in chunk

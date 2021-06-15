@@ -23,7 +23,6 @@ my $schema      = CDTest->init_schema( no_populate => 1 );
 my $producer_rs = $schema->resultset('Producer');
 
 # Pretend the name field contains very large numeric IDs
-$DBIx::BatchChunker::DB_MAX_ID = 2 ** 256;
 for my $i ( 1 .. 20 ) {
     my $zeropad = sprintf '%.2u', $i;
     # side-stepping varchar->int casting issues with the DB
@@ -41,7 +40,7 @@ my $max_id = Math::BigInt->new('9'.('20' x 20));
 my $step   = Math::BigInt->new('01' x 20);
 
 # Stolen from DBIx::BatchChunker
-my @BIGNUM_LS_ATTRS = (qw< start end prev_end max_end multiplier_range multiplier_step chunk_size chunk_count >);
+my @BIGNUM_LS_ATTRS = (qw< start end prev_end multiplier_range multiplier_step chunk_size chunk_count >);
 
 my $CHUNK_SIZE = $step;
 
@@ -99,7 +98,7 @@ subtest 'DBIC Processing + process_past_max' => sub {
 
     # Process
     $batch_chunker->execute;
-    cmp_ok($calls,   '==', 20,      'Right number of calls');
+    cmp_ok($calls,   '==', 21,      'Right number of calls');
     cmp_ok($max_end, '==', $max_id, 'Final chunk ends at max_id');
 };
 
