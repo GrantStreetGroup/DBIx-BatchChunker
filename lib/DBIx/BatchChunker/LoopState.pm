@@ -7,10 +7,12 @@ our $AUTHORITY = 'cpan:GSG';
 use Moo;
 use MooX::StrictConstructor;
 
-use Types::Standard        qw( InstanceOf ArrayRef HashRef Int Str Num Maybe );
-use Types::Common::Numeric qw( PositiveNum PositiveOrZeroNum );
+use Types::Standard qw( InstanceOf ArrayRef HashRef Int Str Num Maybe );
+use Types::Numbers  qw( UnsignedInt PositiveNum PositiveOrZeroNum FloatSafeNum );
 use Type::Utils;
 
+use Math::BigInt upgrade => 'Math::BigFloat';
+use Math::BigFloat;
 use Time::HiRes qw( time );
 
 # Don't export the above, but don't conflict with StrictConstructor, either
@@ -96,7 +98,7 @@ undef when a chunk is finally processed.
 
 has start => (
     is       => 'rw',
-    isa      => Maybe[Int],
+    isa      => Maybe[UnsignedInt],
     lazy     => 1,
     default  => sub { shift->batch_chunker->min_id },
 );
@@ -110,7 +112,7 @@ beginning of the loop.
 
 has end => (
     is       => 'rw',
-    isa      => Int,
+    isa      => UnsignedInt,
     lazy     => 1,
     default  => sub {
         my $self = shift;
@@ -127,25 +129,9 @@ calculations and to determine if the end of the loop has been reached.
 
 has prev_end => (
     is       => 'rw',
-    isa      => Int,
+    isa      => UnsignedInt,
     lazy     => 1,
     default  => sub { shift->start - 1 },
-);
-
-=head2 max_end
-
-The maximum ending ID.  This will be C<$DB_MAX_ID> if L</process_past_max> is set.
-
-=cut
-
-has max_end => (
-    is       => 'rw',
-    isa      => Int,
-    lazy     => 1,
-    default  => sub {
-        my $bc = shift->batch_chunker;
-        $bc->process_past_max ? $DBIx::BatchChunker::DB_MAX_ID : $bc->max_id
-    },
 );
 
 =head2 last_range
@@ -186,8 +172,11 @@ Resets after block processing.
 
 has multiplier_range => (
     is       => 'rw',
-    isa      => PositiveOrZeroNum,
-    default  => 0,
+    isa      => FloatSafeNum,
+    lazy     => 1,
+    default  => sub {
+        shift->batch_chunker->_use_bignums ? Math::BigFloat->new(0) : 0;
+    },
 );
 
 =head2 multiplier_step
@@ -200,8 +189,11 @@ checks are hitting.  Resets after block processing.
 
 has multiplier_step => (
     is       => 'rw',
-    isa      => PositiveNum,
-    default  => 1,
+    isa      => FloatSafeNum,
+    lazy     => 1,
+    default  => sub {
+        shift->batch_chunker->_use_bignums ? Math::BigFloat->new(1) : 1;
+    },
 );
 
 =head2 checked_count
@@ -225,7 +217,7 @@ The I<current> chunk size, which might be adjusted by runtime targeting.
 
 has chunk_size => (
     is       => 'rw',
-    isa      => Int,
+    isa      => UnsignedInt,
     lazy     => 1,
     default  => sub { shift->batch_chunker->chunk_size },
 );
@@ -238,7 +230,7 @@ Records the results of the C<COUNT(*)> query for chunk resizing.
 
 has chunk_count => (
     is       => 'rw',
-    isa      => Maybe[Int],
+    isa      => Maybe[UnsignedInt],
     default  => undef,
 );
 
@@ -278,6 +270,11 @@ sub _reset_chunk_state {
     $ls->multiplier_range(0);
     $ls->multiplier_step (1);
     $ls->checked_count   (0);
+
+    if ($ls->batch_chunker->_use_bignums) {
+        $ls->multiplier_range( Math::BigFloat->new(0) );
+        $ls->multiplier_step ( Math::BigFloat->new(1) );
+    }
 }
 
 1;
