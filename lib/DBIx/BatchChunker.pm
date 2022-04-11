@@ -1389,6 +1389,18 @@ sub _chunk_count_checker {
         $ls->prev_check('skipped rows');
         return 0;
     }
+    elsif ($ls->end - $ls->start <= 0) {
+        # Down to a single ID: We _have_ to process it
+        $ls->prev_check('at a single ID');
+
+        # Complain, because this can be dangerous with a wild enough Row:ID ratio
+        if ($ls->chunk_count > 1) {
+            $progress->message('WARNING: Processing a single ID with many rows attached because resizing cannot proceed any further.');
+            $progress->message('Consider flipping the relationship so that IDs and row counts are 1:1.');
+        }
+
+        return 1;
+    }
     elsif ($chunk_percent > 1 + $self->min_chunk_percent) {
         # Too many rows: Backtrack to the previous range and try to bisect
         $self->_print_debug_status('shrunk');
@@ -1409,8 +1421,9 @@ sub _chunk_count_checker {
         return 0;
     }
 
-    # The above two are more important than skipping the count checks.  Better to
-    # have too few rows than too many.
+    # The above three are more important than skipping the count checks.  Better to
+    # have too few rows than too many.  The single ID check prevents infinite loops
+    # from bisecting, though.
 
     elsif ($ls->checked_count > 10) {
         # Checked too many times: Just process it

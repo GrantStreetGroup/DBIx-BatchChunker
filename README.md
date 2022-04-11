@@ -4,7 +4,7 @@ DBIx::BatchChunker - Run large database changes safely
 
 # VERSION
 
-version v0.941.0
+version v0.941.1
 
 # SYNOPSIS
 
@@ -584,7 +584,7 @@ Grant Street Group <developers@grantstreet.com>
 
 # COPYRIGHT AND LICENSE
 
-This software is Copyright (c) 2018 - 2021 by Grant Street Group.
+This software is Copyright (c) 2018 - 2022 by Grant Street Group.
 
 This is free software, licensed under:
 
