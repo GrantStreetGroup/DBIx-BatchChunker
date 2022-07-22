@@ -509,9 +509,18 @@ has coderef => (
 
 The amount of rows to be processed in each loop.
 
-Default is 1000 rows.  This figure should be sized to keep per-chunk processing time
-at around 5 seconds.  If this is too large, rows may lock for too long.  If it's too
-small, processing may be unnecessarily slow.
+This figure should be sized to keep per-chunk processing time at around 5 seconds.  If
+this is too large, rows may lock for too long.  If it's too small, processing may be
+unnecessarily slow.
+
+Default is 1 row, which is only appropriate if L</target_time> (on by default) is
+enabled.  This will cause the processing to slowly ramp up to the target time as
+BatchChunker gathers more data.
+
+Otherwise, if you using static chunk sizes with C<target_time> turned off, figure out
+the right chunk size with a few test runs and set it here.
+
+(This was previously defaulted to 1000 rows, prior to v0.942.)
 
 =cut
 
@@ -519,7 +528,7 @@ has chunk_size => (
     is       => 'rw',
     isa      => PositiveInt,
     required => 0,
-    default  => 1000,
+    default  => 1,
 );
 
 =head3 target_time
@@ -528,10 +537,13 @@ The target runtime (in seconds) that chunk processing should strive to achieve, 
 including L</sleep>.  If the chunk processing times are too high or too low, this will
 dynamically adjust L</chunk_size> to try to match the target.
 
-B<Turning this on does not mean you should ignore C<chunk_size>!>  If the starting chunk
-size is grossly inaccurate to the workload, you could end up with several chunks in the
-beginning causing long-lasting locks before the runtime targeting reduces them down to a
-reasonable size.
+BatchChunker will still use the initial C<chunk_size>, and it will need at least one
+chunk processed, before it makes adjustments.  If the starting chunk size is grossly
+inaccurate to the workload, you could end up with several chunks in the beginning causing
+long-lasting locks before the runtime targeting reduces them down to a reasonable size.
+
+(Chunk size reductions are prioritized before increases, so it should re-size as soon as
+it finds the problem.  But, one bad chunk could be all it takes to cause an outage.)
 
 Default is 5 seconds.  Set this to zero to turn off runtime targeting.  (This was
 previously defaulted to off prior to v0.92, and set to 15 in v0.92.)
@@ -550,14 +562,16 @@ has target_time => (
 The number of seconds to sleep after each chunk.  It uses L<Time::HiRes>'s version, so
 fractional numbers are allowed.
 
-Default is 0, which is fine for most operations.  But, it is highly recommended to turn
-this on (say, 1 to 5 seconds) for really long one-off DB operations, especially if a lot
-of disk I/O is involved.  Without this, there's a chance that the slaves will have a hard
-time keeping up, and/or the master won't have enough processing power to keep up with
+Default is 0.5 seconds, which is fine for most operations.  You can likely get away with
+zero for smaller operations, but test it out first.  If processing is going to take up a
+lot of disk I/O, you may want to consider a higher setting.  If the database server
+spends too much time on processing, the replicas may have a hard time keeping up with
 standard load.
 
 This will increase the overall processing time of the loop, so try to find a balance
 between the two.
+
+(This was previously defaulted to 0 seconds, prior to v0.942.)
 
 =cut
 
@@ -565,7 +579,7 @@ has 'sleep' => (
     is       => 'ro',
     isa      => PositiveOrZeroNum,
     required => 0,
-    default  => 0,
+    default  => 0.5,
 );
 
 =head3 process_past_max
@@ -848,6 +862,15 @@ around BUILDARGS => sub {
         (defined $args{rs} && $args{coderef}) ||
         $args{coderef}
     );
+
+    if (exists $args{target_time} && $args{target_time} == 0 && !$args{chunk_size}) {
+        warn join "\n",
+            'Dynamic chunk resizing is turned off and the chunk_size is still set to its default of 1.',
+            'This is probably not desirable, and you should find an appropriate static chunk size for',
+            'your workload.',
+            ''
+        ;
+    }
 
     $class->$next( %args );
 };
