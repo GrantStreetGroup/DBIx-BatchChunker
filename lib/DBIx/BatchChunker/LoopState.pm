@@ -76,7 +76,7 @@ has progress_bar => (
 
 =head2 timer
 
-Timer for debug messages.  Always spans the time between debug messages.
+Timer for chunk messages.  Always spans the time between chunk messages.
 
 =cut
 

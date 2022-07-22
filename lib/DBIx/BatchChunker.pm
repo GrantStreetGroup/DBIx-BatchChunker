@@ -48,7 +48,7 @@ our $DB_MAX_ID = ~0;
 
         coderef => sub { $_[1]->delete },
         sleep   => 1,
-        debug   => 1,
+        verbose => 1,
 
         progress_name    => 'Deleting deprecated accounts',
         process_past_max => 1,
@@ -441,18 +441,24 @@ has cldr => (
     default  => sub { CLDR::Number->new(locale => 'en') },
 );
 
-=head3 debug
+=head3 verbose
 
-Boolean.  If turned on, displays timing stats on each chunk, as well as total numbers.
+Boolean.  By default, this is on, which displays timing stats on each chunk, as well as
+total numbers.  This is still subject to non-interactivity checks from L</progress_bar>.
+
+(This was previously defaulted to off, and called C<debug>, prior to v0.942.)
 
 =cut
 
-has debug => (
+has verbose => (
     is       => 'rw',
     isa      => Bool,
     required => 0,
-    default  => 0,
+    default  => 1,
 );
+
+# Backwards-compatibility
+*debug = \&verbose;
 
 =head2 Common Attributes
 
@@ -773,6 +779,9 @@ around BUILDARGS => sub {
 
     my %args = @_ == 1 ? %{ $_[0] } : @_;
 
+    # debug -> verbose
+    $args{verbose} //= delete $args{debug} if exists $args{debug};
+
     # Auto-building of rsc and id_name can be a weird dependency dance, so it's better to
     # handle it here.
     my ($rsc, $rs, $id_name) = @args{qw< rsc rs id_name >};
@@ -1057,7 +1066,7 @@ sub calculate_ranges {
 
         ### Optional ###
         progress_bar     => $progress,  # defaults to "Processing $source_name" bar
-        debug            => 1,          # displays timing stats on each chunk
+        verbose          => 1,          # displays timing stats on each chunk
     );
 
     $batch_chunker->execute if $batch_chunker->calculate_ranges;
@@ -1096,7 +1105,7 @@ sub execute {
         return;
     }
 
-    if ($self->debug) {
+    if ($self->verbose) {
         $progress->message(
             sprintf "(%s total chunks; %s total rows)",
                 map { $self->cldr->decimal_formatter->format($_) } ( ceil($count / $self->chunk_size), $count)
@@ -1133,7 +1142,7 @@ sub execute {
         # Give the DB a little bit of breathing room
         sleep $self->sleep if $self->sleep;
 
-        $self->_print_debug_status('processed');
+        $self->_print_chunk_status('processed');
         $self->_increment_progress;
         $self->_runtime_checker;
 
@@ -1320,7 +1329,7 @@ sub _process_past_max_checker {
     }
 
     # Run another MAX check
-    $progress->message('Reached end; re-checking max ID') if $self->debug;
+    $progress->message('Reached end; re-checking max ID') if $self->verbose;
     my $new_max_id;
     if (defined( my $rsc = $self->rsc )) {
         $self->_dbic_block_runner( run => sub {
@@ -1344,7 +1353,7 @@ sub _process_past_max_checker {
 
     if (!$new_max_id || $new_max_id eq '0E0') {
         # No max: No affected rows to change
-        $progress->message('No max ID found; nothing left to process...') if $self->debug;
+        $progress->message('No max ID found; nothing left to process...') if $self->verbose;
         $ls->end($self->max_id);
 
         $ls->prev_check('no max');
@@ -1352,18 +1361,18 @@ sub _process_past_max_checker {
     }
     elsif ($new_max_id > $self->max_id) {
         # New max ID
-        $progress->message( sprintf 'New max ID set from %s to %s', $self->max_id, $new_max_id ) if $self->debug;
+        $progress->message( sprintf 'New max ID set from %s to %s', $self->max_id, $new_max_id ) if $self->verbose;
         $self->max_id($new_max_id);
         $progress->target( $new_max_id - $self->min_id + 1 );
         $progress->update( $progress->last_update );
     }
     elsif ($new_max_id == $self->max_id) {
         # Same max ID
-        $progress->message( sprintf 'Found max ID %s; same as end', $new_max_id ) if $self->debug;
+        $progress->message( sprintf 'Found max ID %s; same as end', $new_max_id ) if $self->verbose;
     }
     else {
         # Max too low
-        $progress->message( sprintf 'Found max ID %s; ignoring...', $new_max_id ) if $self->debug;
+        $progress->message( sprintf 'Found max ID %s; ignoring...', $new_max_id ) if $self->verbose;
     }
 
     # Run another boundary check with the new max_id value
@@ -1401,7 +1410,7 @@ sub _chunk_count_checker {
 
     if    ($ls->chunk_count == 0 && $self->min_chunk_percent > 0) {
         # No rows: Skip the block entirely, and accelerate the stepping
-        $self->_print_debug_status('skipped');
+        $self->_print_chunk_status('skipped');
 
         $self->_increment_progress;
 
@@ -1426,7 +1435,7 @@ sub _chunk_count_checker {
     }
     elsif ($chunk_percent > 1 + $self->min_chunk_percent) {
         # Too many rows: Backtrack to the previous range and try to bisect
-        $self->_print_debug_status('shrunk');
+        $self->_print_chunk_status('shrunk');
 
         $ls->_mark_timer;
 
@@ -1460,7 +1469,7 @@ sub _chunk_count_checker {
     }
     elsif ($chunk_percent < $self->min_chunk_percent) {
         # Too few rows: Keep the start ID and accelerate towards a better endpoint
-        $self->_print_debug_status('expanded');
+        $self->_print_chunk_status('expanded');
 
         $ls->_mark_timer;
 
@@ -1544,8 +1553,8 @@ sub _runtime_checker {
     return if $new_target_chunk_size == $ls->chunk_size;  # either nothing changed or it's too miniscule
     return if $new_target_chunk_size < 1;
 
-    # Print out a debug line, if enabled
-    if ($self->debug) {
+    # Print out a processing line, if enabled
+    if ($self->verbose) {
         # CLDR number formatters
         my $integer = $self->cldr->decimal_formatter;
         my $percent = $self->cldr->percent_formatter;
@@ -1581,17 +1590,17 @@ sub _increment_progress {
     $progress->update($so_far);
 }
 
-=head2 _print_debug_status
+=head2 _print_chunk_status
 
-Prints out a standard debug status line, if debug is enabled.  What it prints is
+Prints out a standard chunk status line, if L</verbose> is enabled.  What it prints is
 generally uniform, but it depends on the processing action.  Most of the data is
 pulled from L</loop_state>.
 
 =cut
 
-sub _print_debug_status {
+sub _print_chunk_status {
     my ($self, $action) = @_;
-    return unless $self->debug;
+    return unless $self->verbose;
 
     my $ls    = $self->loop_state;
     my $sleep = $self->sleep || 0;
