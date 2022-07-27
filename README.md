@@ -4,7 +4,7 @@ DBIx::BatchChunker - Run large database changes safely
 
 # VERSION
 
-version v0.941.1
+version v1.0.0
 
 # SYNOPSIS
 
@@ -23,7 +23,7 @@ version v0.941.1
 
         coderef => sub { $_[1]->delete },
         sleep   => 1,
-        debug   => 1,
+        verbose => 1,
 
         progress_name    => 'Deleting deprecated accounts',
         process_past_max => 1,
@@ -277,9 +277,12 @@ from scratch.
 A [CLDR::Number](https://metacpan.org/pod/CLDR%3A%3ANumber) object.  English speakers that use a typical `1,234.56` format would
 probably want to leave it at the default.  Otherwise, you should provide your own.
 
-### debug
+### verbose
 
-Boolean.  If turned on, displays timing stats on each chunk, as well as total numbers.
+Boolean.  By default, this is on, which displays timing stats on each chunk, as well as
+total numbers.  This is still subject to non-interactivity checks from ["progress\_bar"](#progress_bar).
+
+(This was previously defaulted to off, and called `debug`, prior to v1.0.0.)
 
 ## Common Attributes
 
@@ -313,9 +316,18 @@ Required for all processing modes except ["Active DBI Processing"](#active-dbi-p
 
 The amount of rows to be processed in each loop.
 
-Default is 1000 rows.  This figure should be sized to keep per-chunk processing time
-at around 5 seconds.  If this is too large, rows may lock for too long.  If it's too
-small, processing may be unnecessarily slow.
+This figure should be sized to keep per-chunk processing time at around 5 seconds.  If
+this is too large, rows may lock for too long.  If it's too small, processing may be
+unnecessarily slow.
+
+Default is 1 row, which is only appropriate if ["target\_time"](#target_time) (on by default) is
+enabled.  This will cause the processing to slowly ramp up to the target time as
+BatchChunker gathers more data.
+
+Otherwise, if you using static chunk sizes with `target_time` turned off, figure out
+the right chunk size with a few test runs and set it here.
+
+(This was previously defaulted to 1000 rows, prior to v1.0.0.)
 
 ### target\_time
 
@@ -323,10 +335,13 @@ The target runtime (in seconds) that chunk processing should strive to achieve, 
 including ["sleep"](#sleep).  If the chunk processing times are too high or too low, this will
 dynamically adjust ["chunk\_size"](#chunk_size) to try to match the target.
 
-**Turning this on does not mean you should ignore `chunk_size`!**  If the starting chunk
-size is grossly inaccurate to the workload, you could end up with several chunks in the
-beginning causing long-lasting locks before the runtime targeting reduces them down to a
-reasonable size.
+BatchChunker will still use the initial `chunk_size`, and it will need at least one
+chunk processed, before it makes adjustments.  If the starting chunk size is grossly
+inaccurate to the workload, you could end up with several chunks in the beginning causing
+long-lasting locks before the runtime targeting reduces them down to a reasonable size.
+
+(Chunk size reductions are prioritized before increases, so it should re-size as soon as
+it finds the problem.  But, one bad chunk could be all it takes to cause an outage.)
 
 Default is 5 seconds.  Set this to zero to turn off runtime targeting.  (This was
 previously defaulted to off prior to v0.92, and set to 15 in v0.92.)
@@ -336,14 +351,16 @@ previously defaulted to off prior to v0.92, and set to 15 in v0.92.)
 The number of seconds to sleep after each chunk.  It uses [Time::HiRes](https://metacpan.org/pod/Time%3A%3AHiRes)'s version, so
 fractional numbers are allowed.
 
-Default is 0, which is fine for most operations.  But, it is highly recommended to turn
-this on (say, 1 to 5 seconds) for really long one-off DB operations, especially if a lot
-of disk I/O is involved.  Without this, there's a chance that the slaves will have a hard
-time keeping up, and/or the master won't have enough processing power to keep up with
+Default is 0.5 seconds, which is fine for most operations.  You can likely get away with
+zero for smaller operations, but test it out first.  If processing is going to take up a
+lot of disk I/O, you may want to consider a higher setting.  If the database server
+spends too much time on processing, the replicas may have a hard time keeping up with
 standard load.
 
 This will increase the overall processing time of the loop, so try to find a balance
 between the two.
+
+(This was previously defaulted to 0 seconds, prior to v1.0.0.)
 
 ### process\_past\_max
 
@@ -492,7 +509,7 @@ If either of the min/max statements don't return any ID data, this method will r
 
         ### Optional ###
         progress_bar     => $progress,  # defaults to "Processing $source_name" bar
-        debug            => 1,          # displays timing stats on each chunk
+        verbose          => 1,          # displays timing stats on each chunk
     );
 
     $batch_chunker->execute if $batch_chunker->calculate_ranges;
@@ -543,9 +560,9 @@ See ["target\_time"](#target_time).
 
 Increments the progress bar.
 
-## \_print\_debug\_status
+## \_print\_chunk\_status
 
-Prints out a standard debug status line, if debug is enabled.  What it prints is
+Prints out a standard chunk status line, if ["verbose"](#verbose) is enabled.  What it prints is
 generally uniform, but it depends on the processing action.  Most of the data is
 pulled from ["loop\_state"](#loop_state).
 

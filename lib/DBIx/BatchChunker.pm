@@ -446,7 +446,7 @@ has cldr => (
 Boolean.  By default, this is on, which displays timing stats on each chunk, as well as
 total numbers.  This is still subject to non-interactivity checks from L</progress_bar>.
 
-(This was previously defaulted to off, and called C<debug>, prior to v0.942.)
+(This was previously defaulted to off, and called C<debug>, prior to v1.0.0.)
 
 =cut
 
@@ -526,7 +526,7 @@ BatchChunker gathers more data.
 Otherwise, if you using static chunk sizes with C<target_time> turned off, figure out
 the right chunk size with a few test runs and set it here.
 
-(This was previously defaulted to 1000 rows, prior to v0.942.)
+(This was previously defaulted to 1000 rows, prior to v1.0.0.)
 
 =cut
 
@@ -577,7 +577,7 @@ standard load.
 This will increase the overall processing time of the loop, so try to find a balance
 between the two.
 
-(This was previously defaulted to 0 seconds, prior to v0.942.)
+(This was previously defaulted to 0 seconds, prior to v1.0.0.)
 
 =cut
 
