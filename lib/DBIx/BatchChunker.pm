@@ -588,6 +588,26 @@ has 'sleep' => (
     default  => 0.5,
 );
 
+=head3 max_runtime
+
+The number of seconds that the entire process is allowed to run.  If you have a
+long-running I<and idempotent> operation that you don't want to run for days, you can set
+this attribute, execute the operation, and run it again at a later date.  The L</min_id>
+will be set to the last-used ID, so the operation can be continued with another
+L</execute> call.  Or you can use this to figure out if it finished or not.
+
+Turned off by default.  If you use this, you should add in extra multipler operations to
+separate out the time math, like C<6 * 60 * 60> for 6 hours.
+
+=cut
+
+has max_runtime => (
+    is       => 'ro',
+    isa      => PositiveOrZeroNum,
+    required => 0,
+    default  => 0,
+);
+
 =head3 process_past_max
 
 Boolean that controls whether to check past the L</max_id> during the loop.  If the loop
@@ -674,6 +694,10 @@ L</calculate_ranges>.
 Manually setting this is not recommended, as each database is different and the
 information may have changed between the DB change development and deployment.  Instead,
 use L</calculate_ranges> to fill in these values right before running the loop.
+
+When the operation is finished, C<min_id> will be set to the last processed ID, just in
+case it was stopped early and needs to be restarted (eg: L</max_runtime> is set).
+Alternately, you can run L</calculate_ranges> again to confirm from the database.
 
 =cut
 
@@ -1061,6 +1085,7 @@ sub calculate_ranges {
         single_rows       => 1,    # does $coderef get a single $row or the whole $chunk_rs / $stmt
         min_chunk_percent => 0.25, # minimum row count of chunk size percentage; defaults to 0.5 (or 50%)
         target_time       => 5,    # target runtime for dynamic chunk size scaling; default is 5 seconds
+        max_runtime       => 12 * 60 * 60, # stop processing after 12 hours
 
         progress_name => 'Updating Accounts',  # easier than creating your own progress_bar
 
@@ -1131,6 +1156,12 @@ sub execute {
         );
         $ls->chunk_count     (undef);
 
+        # Early loop exit because of maximum run time
+        if ($self->max_runtime && time - $ls->total_timer > $self->max_runtime) {
+            $progress->message('Ran past the maximum run time');
+            last;
+        }
+
         next unless $self->_process_past_max_checker;
 
         # The actual DB processing
@@ -1149,6 +1180,9 @@ sub execute {
         # End-of-loop activities (skipped by early next)
         $ls->_reset_chunk_state;
     }
+
+    # Re-set min_id and clear the loop state
+    $self->min_id( $ls->prev_end );
     $self->clear_loop_state;
 
     # Keep the finished time from the progress bar, in case there are other loops or output

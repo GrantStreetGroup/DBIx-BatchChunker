@@ -257,7 +257,7 @@ subtest 'Runtime targeting (too fast)' => sub {
     my $max_size = $CHUNK_SIZE;
     my $chunk_size_changes = 0;
 
-    my $batch_chunker = DBIx::BatchChunker->construct_and_execute(
+    my $batch_chunker = DBIx::BatchChunker->new(
         chunk_size  => $CHUNK_SIZE,
         target_time => 0.5,
 
@@ -284,9 +284,16 @@ subtest 'Runtime targeting (too fast)' => sub {
         debug             => 0,
     );
 
+    # Calculate
+    ok($batch_chunker->calculate_ranges, 'calculate_ranges ok');
+    ok($batch_chunker->min_id,           'min_id ok');
+    ok($batch_chunker->max_id,           'max_id ok');
+
     my $range = $batch_chunker->max_id - $batch_chunker->min_id + 1;
     my $multiplier_range = ceil($range / $CHUNK_SIZE);
-    my $right_changes    = ceil($calls / 5) - 1;
+
+    $batch_chunker->execute;
+    my $right_changes = ceil($calls / 5) - 1;
 
     cmp_ok($calls,              '<',  $multiplier_range,      'Fewer coderef calls than normal');
     cmp_ok($max_end,            '==', $batch_chunker->max_id, 'Final chunk ends at max_id');
@@ -300,7 +307,7 @@ subtest 'Runtime targeting (too slow)' => sub {
     my $min_size = $CHUNK_SIZE;
     my $chunk_size_changes = 0;
 
-    my $batch_chunker = DBIx::BatchChunker->construct_and_execute(
+    my $batch_chunker = DBIx::BatchChunker->new(
         chunk_size  => $CHUNK_SIZE,
         target_time => 0.05,
 
@@ -327,10 +334,16 @@ subtest 'Runtime targeting (too slow)' => sub {
         debug             => 0,
     );
 
+    # Calculate
+    ok($batch_chunker->calculate_ranges, 'calculate_ranges ok');
+    ok($batch_chunker->min_id,           'min_id ok');
+    ok($batch_chunker->max_id,           'max_id ok');
+
     my $range = $batch_chunker->max_id - $batch_chunker->min_id + 1;
     my $multiplier_range = ceil($range / $CHUNK_SIZE);
     my $right_calls      = $range - $CHUNK_SIZE + 1;
 
+    $batch_chunker->execute;
     cmp_ok($calls,    '>',  $multiplier_range,      'Greater coderef calls than normal');
     cmp_ok($calls,    '==', $right_calls,           'Right coderef calls');
     cmp_ok($max_end,  '==', $batch_chunker->max_id, 'Final chunk ends at max_id');
@@ -419,6 +432,48 @@ subtest 'Retry testing + single_rows' => sub {
     $batch_chunker->execute;
     cmp_ok($calls,   '>=', $rightish_calls,        'Rightish number of calls');
     cmp_ok($max_end, '==', $batch_chunker->max_id, 'Final chunk ends at max_id');
+};
+
+subtest 'Maximum runtime' => sub {
+    my ($calls, $max_end) = (0, 0);
+
+    my $batch_chunker = DBIx::BatchChunker->new(
+        chunk_size  => $CHUNK_SIZE,
+        target_time => 0,
+        max_runtime => 3,
+
+        rs          => $track_rs,
+        coderef     => sub {
+            my ($bc, $rs) = @_;
+            isa_ok($rs, ['DBIx::Class::ResultSet'], '$rs');
+            $calls++;
+            sleep 0.5;
+
+            my $ls = $bc->loop_state;
+            $max_end = max($max_end, $ls->end);
+
+            note explain $ls if $BATCHCHUNK_TEST_DEBUG;
+        },
+
+        min_chunk_percent => 0,
+        verbose           => 0,
+    );
+
+    # Calculate
+    ok($batch_chunker->calculate_ranges, 'calculate_ranges ok');
+    ok($batch_chunker->min_id,           'min_id ok');
+    ok($batch_chunker->max_id,           'max_id ok');
+
+    my $old_min_id  = $batch_chunker->min_id;
+    my $right_calls = 3 / 0.5;
+
+    $batch_chunker->execute;
+    my $new_min_id = $batch_chunker->min_id;
+
+    cmp_ok($calls,      '>=', 1,                      'Processed some rows');
+    cmp_ok($calls,      '<=', $right_calls,           'Did not exceed 3s of coderef calls');
+    cmp_ok($max_end,    '<',  $batch_chunker->max_id, 'Final chunk ends before max_id');
+    cmp_ok($old_min_id, '<',  $new_min_id,            'min_id is reset to new value');
 };
 
 ############################################################
