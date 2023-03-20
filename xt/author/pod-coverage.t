@@ -9,7 +9,10 @@ use Test::Pod::Coverage 0.08;
 
 my %global_exceptions = ( also_private => [qw< BUILDARGS FOREIGNBUILDARGS BUILD DEMOLISH >] );
 
-my %exceptions = ( 'DBIx::BatchChunker' => { trustme => [qw/^(debug)$/] } );
+my %exceptions = (
+    'DBIx::BatchChunker'            => { trustme => [qw/^(debug)$/] },
+    'DBIx::BatchChunker::LoopState' => { trustme => [qw/^(timer)$/] },
+);
 
 my @modules = all_modules();
 

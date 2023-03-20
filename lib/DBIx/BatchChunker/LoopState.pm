@@ -74,19 +74,35 @@ has progress_bar => (
     required => 1,
 );
 
-=head2 timer
+=head2 total_timer
 
-Timer for chunk messages.  Always spans the time between chunk messages.
+Epoch timer for the start of the entire operation.
 
 =cut
 
-has timer => (
+has total_timer => (
+    is       => 'ro',
+    isa      => PositiveNum,
+    lazy     => 0,  # must be set on creation
+    default  => sub { time() },
+);
+
+=head2 chunk_timer
+
+Epoch timer for the start of each chunk.
+
+=cut
+
+has chunk_timer => (
     is       => 'rw',
     isa      => PositiveNum,
     default  => sub { time() },
 );
 
-sub _mark_timer { shift->timer(time); }
+# Backwards-compatibility
+*timer = \&chunk_timer;
+
+sub _mark_chunk_timer { shift->chunk_timer(time); }
 
 =head2 start
 
@@ -264,7 +280,7 @@ sub _reset_chunk_state {
     my $ls = shift;
     $ls->start   (undef);
     $ls->prev_end($ls->end);
-    $ls->_mark_timer;
+    $ls->_mark_chunk_timer;
 
     $ls->last_range      ({});
     $ls->multiplier_range(0);

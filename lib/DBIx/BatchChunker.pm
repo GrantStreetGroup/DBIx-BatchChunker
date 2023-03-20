@@ -1137,7 +1137,7 @@ sub execute {
         next unless $self->_process_block;
 
         # Record the time quickly
-        $ls->prev_runtime(time - $ls->timer);
+        $ls->prev_runtime(time - $ls->chunk_timer);
 
         # Give the DB a little bit of breathing room
         sleep $self->sleep if $self->sleep;
@@ -1228,7 +1228,7 @@ sub _process_block {
             # Transactional work
             if ($self->dbic_storage) {
                 $self->_dbic_block_runner( txn => sub {
-                    $self->loop_state->_mark_timer;  # reset timer on retries
+                    $self->loop_state->_mark_chunk_timer;  # reset timer on retries
 
                     my $sth = $self->dbic_storage->dbh->prepare(@prepare_args);
                     $sth->execute(@execute_args);
@@ -1238,7 +1238,7 @@ sub _process_block {
             }
             else {
                 $conn->txn(sub {
-                    $self->loop_state->_mark_timer;  # reset timer on retries
+                    $self->loop_state->_mark_chunk_timer;  # reset timer on retries
 
                     my $sth = $_->prepare(@prepare_args);
                     $sth->execute(@execute_args);
@@ -1251,7 +1251,7 @@ sub _process_block {
             # Bulk work (or DML)
             if ($self->dbic_storage) {
                 $self->_dbic_block_runner( run => sub {
-                    $self->loop_state->_mark_timer;  # reset timer on retries
+                    $self->loop_state->_mark_chunk_timer;  # reset timer on retries
 
                     my $sth = $self->dbic_storage->dbh->prepare(@prepare_args);
                     $sth->execute(@execute_args);
@@ -1261,7 +1261,7 @@ sub _process_block {
             }
             else {
                 $conn->run(sub {
-                    $self->loop_state->_mark_timer;  # reset timer on retries
+                    $self->loop_state->_mark_chunk_timer;  # reset timer on retries
 
                     my $sth = $_->prepare(@prepare_args);
                     $sth->execute(@execute_args);
@@ -1278,7 +1278,7 @@ sub _process_block {
             # Transactional work
             $self->_dbic_block_runner( txn => sub {
                 # reset timer/$rs on retries
-                $self->loop_state->_mark_timer;
+                $self->loop_state->_mark_chunk_timer;
                 $chunk_rs->reset;
 
                 while (my $row = $chunk_rs->next) { $self->coderef->($self, $row) }
@@ -1288,7 +1288,7 @@ sub _process_block {
             # Bulk work
             $self->_dbic_block_runner( run => sub {
                 # reset timer/$rs on retries
-                $self->loop_state->_mark_timer;
+                $self->loop_state->_mark_chunk_timer;
                 $chunk_rs->reset;
 
                 $self->coderef->($self, $chunk_rs);
@@ -1346,7 +1346,7 @@ sub _process_past_max_checker {
             $_->selectrow_array(@{ $self->max_stmt });
         });
     }
-    $ls->_mark_timer;  # the above query shouldn't impact runtimes
+    $ls->_mark_chunk_timer;  # the above query shouldn't impact runtimes
 
     # Convert $new_max_id if necessary
     $new_max_id = Math::BigInt->new($new_max_id) if $self->_check_bignums($new_max_id);
@@ -1437,7 +1437,7 @@ sub _chunk_count_checker {
         # Too many rows: Backtrack to the previous range and try to bisect
         $self->_print_chunk_status('shrunk');
 
-        $ls->_mark_timer;
+        $ls->_mark_chunk_timer;
 
         # If we have a min/max range, bisect down the middle.  If not, walk back
         # to the previous range and decelerate the stepping, which should bring
@@ -1471,7 +1471,7 @@ sub _chunk_count_checker {
         # Too few rows: Keep the start ID and accelerate towards a better endpoint
         $self->_print_chunk_status('expanded');
 
-        $ls->_mark_timer;
+        $ls->_mark_chunk_timer;
 
         # If we have a min/max range, bisect down the middle.  If not, keep
         # accelerating the stepping.
