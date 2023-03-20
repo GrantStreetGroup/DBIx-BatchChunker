@@ -1466,7 +1466,8 @@ sub _chunk_count_checker {
         return 1;
     }
 
-    my $chunk_percent = $ls->chunk_count / $ls->chunk_size;
+    my $chunk_percent    = $ls->chunk_count / $ls->chunk_size;
+    my $count_check_time = time - $ls->chunk_timer;  # should only include the COUNT time at this point
     $ls->checked_count( $ls->checked_count + 1 );
 
     if    ($ls->chunk_count == 0 && $self->min_chunk_percent > 0) {
@@ -1497,24 +1498,34 @@ sub _chunk_count_checker {
     elsif ($chunk_percent > 1 + $self->min_chunk_percent) {
         # Too many rows: Backtrack to the previous range and try to bisect
         $self->_print_chunk_status('shrunk');
-
         $ls->_mark_chunk_timer;
-
-        # If we have a min/max range, bisect down the middle.  If not, walk back
-        # to the previous range and decelerate the stepping, which should bring
-        # it to a halfway point from this range and last.
-        my $lr = $ls->last_range;
-        $lr->{max} = $ls->multiplier_range if !defined $lr->{max} || $ls->multiplier_range < $lr->{max};
-        $ls->multiplier_range( $lr->{min} || ($ls->multiplier_range - $ls->multiplier_step) );
-        $ls->multiplier_step(
-            defined $lr->{min} ? ($lr->{max} - $lr->{min}) / 2 : $ls->multiplier_step / 2
-        );
-
+        $ls->_decrease_multiplier;
         $ls->prev_check('too many rows');
         return 0;
     }
+    elsif ($self->target_time && $count_check_time > $self->target_time * 1.05) {
+        # COUNT statement too slow: Backtrack to the previous range and try to bisect
 
-    # The above three are more important than skipping the count checks.  Better to
+        # This is a rare failure, so print a warning
+        my $integer = $self->cldr->decimal_formatter;
+        my $decimal = $self->cldr->decimal_formatter(
+            minimum_fraction_digits => 2,
+            maximum_fraction_digits => 2,
+        );
+        $progress->message( sprintf(
+            'WARNING: COUNT statement was too slow; took %5s sec to return %s rows.',
+            $decimal->format($count_check_time),
+            $integer->format( $ls->chunk_count )
+        ) );
+
+        $self->_print_chunk_status('shrunk');
+        $ls->_mark_chunk_timer;
+        $ls->_decrease_multiplier;
+        $ls->prev_check('COUNT too slow');
+        return 0;
+    }
+
+    # The above four are more important than skipping the count checks.  Better to
     # have too few rows than too many.  The single ID check prevents infinite loops
     # from bisecting, though.
 
@@ -1531,17 +1542,8 @@ sub _chunk_count_checker {
     elsif ($chunk_percent < $self->min_chunk_percent) {
         # Too few rows: Keep the start ID and accelerate towards a better endpoint
         $self->_print_chunk_status('expanded');
-
         $ls->_mark_chunk_timer;
-
-        # If we have a min/max range, bisect down the middle.  If not, keep
-        # accelerating the stepping.
-        my $lr = $ls->last_range;
-        $lr->{min} = $ls->multiplier_range if !defined $lr->{min} || $ls->multiplier_range > $lr->{min};
-        $ls->multiplier_step(
-            defined $lr->{max} ? ($lr->{max} - $lr->{min}) / 2 : $ls->multiplier_step * 2
-        );
-
+        $ls->_increase_multiplier;
         $ls->prev_check('too few rows');
         return 0;
     }
