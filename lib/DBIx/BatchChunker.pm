@@ -186,7 +186,7 @@ usage.
 
 =head3 rs
 
-A L<DBIx::Class::ResultSet>. This is used by all methods as the base ResultSet onto which
+A L<DBIx::Class::ResultSet>.  This is used by all methods as the base ResultSet onto which
 the DB changes will be applied.  Required for DBIC processing.
 
 =cut
@@ -199,7 +199,7 @@ has rs => (
 
 =head3 rsc
 
-A L<DBIx::Class::ResultSetColumn>. This is only used to override L</rs> for min/max
+A L<DBIx::Class::ResultSetColumn>.  This is only used to override L</rs> for min/max
 calculations.  Optional.
 
 =cut
@@ -208,6 +208,29 @@ has rsc => (
     is        => 'ro',
     isa       => InstanceOf['DBIx::Class::ResultSetColumn'],
     required  => 0,
+);
+
+=head3 count_rs
+
+A L<DBIx::Class::ResultSet>, only used to override L</rs> for row counting calculations.
+For 99.9% of cases, you do not need to set this.  Though, it could be used for the rare
+case where the original Resulset would run into indexing problems with its row counting
+statement and needs something broader to compensate.
+
+B<WARNING:> Do not set this unless you know what you're doing.  Having a different C<COUNT>
+ResultSet from the base ResultSet means that the row counts to size up the chunk workload
+will be different from the workload itself.  If the row counts are too high, you may end
+up with workloads that are too quick and L<runtime targeting|/target_time> may compensate
+with an overly large chunk size, anyway.  If the row counts are too low, you risk having
+a oversized chunk that gets processed and locks rows for too long, and chunk resizing may
+even skip blocks that it thinks have no rows to process.
+
+=cut
+
+has count_rs => (
+    is       => 'ro',
+    isa      => InstanceOf['DBIx::Class::ResultSet'],
+    required => 0,
 );
 
 =head3 dbic_retry_opts
@@ -821,6 +844,9 @@ around BUILDARGS => sub {
     }
     $rsc = $args{rsc};
 
+    # Default count_rs is just $rs
+    $args{count_rs} //= $rs if defined $rs;
+
     # Auto-add dbic_storage, if available
     if (!defined $args{dbic_storage} && (defined $rs || defined $rsc)) {
         $args{dbic_storage} = defined $rs ? $rs->result_source->storage : $rsc->_resultset->result_source->storage;
@@ -1204,10 +1230,11 @@ block should be processed or not.
 sub _process_block {
     my ($self) = @_;
 
-    my $ls      = $self->loop_state;
-    my $conn    = $self->dbi_connector;
-    my $coderef = $self->coderef;
-    my $rs      = $self->rs;
+    my $ls       = $self->loop_state;
+    my $conn     = $self->dbi_connector;
+    my $coderef  = $self->coderef;
+    my $rs       = $self->rs;
+    my $count_rs = $self->count_rs // $rs;
 
     # Figure out if the row count is worth the work
     my $chunk_rs;
@@ -1231,8 +1258,8 @@ sub _process_block {
             );
         });
     }
-    elsif (defined $rs) {
-        $chunk_rs = $rs->search({
+    elsif (defined $count_rs) {
+        $chunk_rs = $count_rs->search({
             $self->id_name => { -between => [$ls->start, $ls->end] },
         });
 
