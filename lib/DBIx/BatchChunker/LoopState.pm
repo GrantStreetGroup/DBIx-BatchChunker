@@ -91,6 +91,8 @@ has total_timer => (
 
 Epoch timer for the start of each chunk.
 
+=for Pod::Coverage timer
+
 =cut
 
 has chunk_timer => (

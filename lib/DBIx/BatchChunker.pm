@@ -471,6 +471,8 @@ total numbers.  This is still subject to non-interactivity checks from L</progre
 
 (This was previously defaulted to off, and called C<debug>, prior to v1.0.0.)
 
+=for Pod::Coverage debug
+
 =cut
 
 has verbose => (
@@ -819,6 +821,10 @@ has loop_state => (
 
 # Backwards-compatibility
 *_loop_state = \&loop_state;
+
+=for Pod::Coverage BUILDARGS BUILD
+
+=cut
 
 around BUILDARGS => sub {
     my $next  = shift;
