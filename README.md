@@ -4,7 +4,7 @@ DBIx::BatchChunker - Run large database changes safely
 
 # VERSION
 
-version v1.0.0
+version v1.0.1
 
 # SYNOPSIS
 
@@ -161,13 +161,28 @@ usage.
 
 ### rs
 
-A [DBIx::Class::ResultSet](https://metacpan.org/pod/DBIx%3A%3AClass%3A%3AResultSet). This is used by all methods as the base ResultSet onto which
+A [DBIx::Class::ResultSet](https://metacpan.org/pod/DBIx%3A%3AClass%3A%3AResultSet).  This is used by all methods as the base ResultSet onto which
 the DB changes will be applied.  Required for DBIC processing.
 
 ### rsc
 
-A [DBIx::Class::ResultSetColumn](https://metacpan.org/pod/DBIx%3A%3AClass%3A%3AResultSetColumn). This is only used to override ["rs"](#rs) for min/max
+A [DBIx::Class::ResultSetColumn](https://metacpan.org/pod/DBIx%3A%3AClass%3A%3AResultSetColumn).  This is only used to override ["rs"](#rs) for min/max
 calculations.  Optional.
+
+### count\_rs
+
+A [DBIx::Class::ResultSet](https://metacpan.org/pod/DBIx%3A%3AClass%3A%3AResultSet), only used to override ["rs"](#rs) for row counting calculations.
+For 99.9% of cases, you do not need to set this.  Though, it could be used for the rare
+case where the original Resulset would run into indexing problems with its row counting
+statement and needs something broader to compensate.
+
+**WARNING:** Do not set this unless you know what you're doing.  Having a different `COUNT`
+ResultSet from the base ResultSet means that the row counts to size up the chunk workload
+will be different from the workload itself.  If the row counts are too high, you may end
+up with workloads that are too quick and [runtime targeting](#target_time) may compensate
+with an overly large chunk size, anyway.  If the row counts are too low, you risk having
+a oversized chunk that gets processed and locks rows for too long, and chunk resizing may
+even skip blocks that it thinks have no rows to process.
 
 ### dbic\_retry\_opts
 
@@ -362,6 +377,17 @@ between the two.
 
 (This was previously defaulted to 0 seconds, prior to v1.0.0.)
 
+### max\_runtime
+
+The number of seconds that the entire process is allowed to run.  If you have a
+long-running _and idempotent_ operation that you don't want to run for days, you can set
+this attribute, execute the operation, and run it again at a later date.  The ["min\_id"](#min_id)
+will be set to the last-used ID, so the operation can be continued with another
+["execute"](#execute) call.  Or you can use this to figure out if it finished or not.
+
+Turned off by default.  If you use this, you should add in extra multipler operations to
+separate out the time math, like `6 * 60 * 60` for 6 hours.
+
 ### process\_past\_max
 
 Boolean that controls whether to check past the ["max\_id"](#max_id) during the loop.  If the loop
@@ -417,6 +443,10 @@ Used by ["execute"](#execute) to figure out the main start and end points.  Calc
 Manually setting this is not recommended, as each database is different and the
 information may have changed between the DB change development and deployment.  Instead,
 use ["calculate\_ranges"](#calculate_ranges) to fill in these values right before running the loop.
+
+When the operation is finished, `min_id` will be set to the last processed ID, just in
+case it was stopped early and needs to be restarted (eg: ["max\_runtime"](#max_runtime) is set).
+Alternately, you can run ["calculate\_ranges"](#calculate_ranges) again to confirm from the database.
 
 ### loop\_state
 
@@ -504,6 +534,7 @@ If either of the min/max statements don't return any ID data, this method will r
         single_rows       => 1,    # does $coderef get a single $row or the whole $chunk_rs / $stmt
         min_chunk_percent => 0.25, # minimum row count of chunk size percentage; defaults to 0.5 (or 50%)
         target_time       => 5,    # target runtime for dynamic chunk size scaling; default is 5 seconds
+        max_runtime       => 12 * 60 * 60, # stop processing after 12 hours
 
         progress_name => 'Updating Accounts',  # easier than creating your own progress_bar
 
@@ -601,7 +632,7 @@ Grant Street Group <developers@grantstreet.com>
 
 # COPYRIGHT AND LICENSE
 
-This software is Copyright (c) 2018 - 2022 by Grant Street Group.
+This software is Copyright (c) 2018 - 2023 by Grant Street Group.
 
 This is free software, licensed under:
 
