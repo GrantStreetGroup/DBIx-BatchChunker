@@ -143,13 +143,15 @@ has end => (
 Last "processed" value of L</end>.  This also includes skipped blocks.  Used in L</start>
 calculations and to determine if the end of the loop has been reached.
 
+Initially C<undef>, if no blocks have been processed yet.
+
 =cut
 
 has prev_end => (
     is       => 'rw',
-    isa      => UnsignedInt,
+    isa      => Maybe[UnsignedInt],
     lazy     => 1,
-    default  => sub { shift->start - 1 },
+    default  => undef,
 );
 
 =head2 last_range
