@@ -1693,19 +1693,26 @@ sub _print_chunk_status {
         maximum_fraction_digits => 2,
     );
 
+    my $chunk_count = $ls->chunk_count;
+    my $count_display = defined $chunk_count
+        ? ($ls->start < 1_000_000_000 && $ls->end < 1_000_000_000
+            ? $integer->format($chunk_count)
+            : $chunk_count)
+        : '?';
+
     my $message;
     if ($ls->start < 1_000_000_000 && $ls->end < 1_000_000_000) {
         $message = sprintf(
             'IDs %6u to %6u %9s, %9s rows found',
             $ls->start, $ls->end, $action,
-            $integer->format( $ls->chunk_count ),
+            $count_display,
         );
     }
     else {
         $message = sprintf(
             'IDs %s to %s %s, %s rows found',
             $ls->start, $ls->end, $action,
-            $ls->chunk_count,
+            $count_display,
         );
     }
 
