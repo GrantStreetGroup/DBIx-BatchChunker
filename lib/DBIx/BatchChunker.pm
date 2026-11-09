@@ -562,6 +562,33 @@ has chunk_size => (
     default  => 1,
 );
 
+=head3 id_increment
+
+The expected distance between consecutive IDs, such as MySQL's C<auto_increment_increment>
+setting.  Each chunk covers a range of C<< chunk_size * id_increment >> IDs, so that a
+chunk holds roughly L</chunk_size> rows.
+
+For example, a Galera cluster that hands out every tenth ID only has 500 rows in every
+5000 IDs.  Without this setting, every chunk would start out at 10% of the expected row
+count, and L<chunk resizing|/min_chunk_percent> would need several extra C<COUNT> queries
+to expand each chunk to a reasonable size.
+
+This only changes the size of the ID range.  L</chunk_size> and L</min_chunk_percent>
+still count rows, and L</target_time> still resizes chunks by rows.  The setting is a
+starting estimate, not a guarantee: chunk resizing still corrects ranges with more or
+fewer rows than expected, such as rows that were inserted under a different increment.
+
+Default is 1, which assumes that IDs are contiguous.
+
+=cut
+
+has id_increment => (
+    is       => 'ro',
+    isa      => PositiveInt,
+    required => 0,
+    default  => 1,
+);
+
 =head3 target_time
 
 The target runtime (in seconds) that chunk processing should strive to achieve, not
@@ -638,7 +665,8 @@ has max_runtime => (
 Boolean that controls whether to check past the L</max_id> during the loop.  If the loop
 hits the end point, it will run another maximum ID check in the DB, and adjust C<max_id>
 accordingly.  If it somehow cannot run a DB check (no L</rs> or L</max_stmt> available,
-for example), the last chunk will just be one at the end of C<< max_id + chunk_size >>.
+for example), the last chunk will just be one at the end of
+C<< max_id + chunk_size * id_increment >>.
 
 This is useful if the entire table is expected to be processed, and you don't want to
 miss any new rows that come up between L</calculate_ranges> and the end of the loop.
@@ -690,6 +718,9 @@ This "chunk resizing" is useful for large regions of the table that have been de
 when the incrementing ID has large gaps in it for other reasons.  Wasting time on
 numerical gaps that span millions can slow down the processing considerably, especially
 if L</sleep> is enabled.
+
+If the gaps are regular, such as an auto-increment step larger than 1, set
+L</id_increment> instead, so that chunks start at the right size and need no resizing.
 
 If this needs to be disabled, set this to 0.  The maximum chunk percentage does not have
 a setting and is hard-coded at C<< 100% + min_chunk_percent >>.
@@ -1117,6 +1148,7 @@ sub calculate_ranges {
         single_rows       => 1,    # does $coderef get a single $row or the whole $chunk_rs / $stmt
         min_chunk_percent => 0.25, # minimum row count of chunk size percentage; defaults to 0.5 (or 50%)
         target_time       => 5,    # target runtime for dynamic chunk size scaling; default is 5 seconds
+        id_increment      => 10,   # distance between consecutive IDs; defaults to 1
         max_runtime       => 12 * 60 * 60, # stop processing after 12 hours
 
         progress_name => 'Updating Accounts',  # easier than creating your own progress_bar
@@ -1165,7 +1197,7 @@ sub execute {
     if ($self->verbose) {
         $progress->message(
             sprintf "(%s total chunks; %s total rows)",
-                map { $self->cldr->decimal_formatter->format($_) } ( ceil($count / $self->chunk_size), $count)
+                map { $self->cldr->decimal_formatter->format($_) } ( ceil($count / ($self->chunk_size * $self->id_increment)), $count)
         );
     }
 
@@ -1193,7 +1225,7 @@ sub execute {
 
         $ls->end(
             min(
-                $ls->start + ceil($ls->multiplier_range * $ls->chunk_size) - 1, # ceil, because multiplier_* could be fractional
+                $ls->start + ceil($ls->multiplier_range * $ls->chunk_size * $self->id_increment) - 1, # ceil, because multiplier_* could be fractional
                 $self->max_id,  # ensure we never exceed max_id
             )
         );
@@ -1402,7 +1434,7 @@ sub _process_past_max_checker {
     # No checks for DIY, if they didn't include a max_stmt
     unless (defined $self->rsc || $self->max_stmt) {
         # There's no way to size this, so add one more chunk
-        $ls->end($self->max_id + $ls->chunk_size);
+        $ls->end($self->max_id + $ls->chunk_size * $self->id_increment);
         return 1;
     }
 
@@ -1462,8 +1494,8 @@ sub _process_past_max_checker {
 =head2 _chunk_count_checker
 
 Checks the chunk count to make sure it's properly sized.  If not, it will try to shrink
-or expand the current chunk (in C<chunk_size> increments) as necessary.  Its return value
-determines whether the block should be processed or not.
+or expand the current chunk (in C<< chunk_size * id_increment >> increments) as
+necessary.  Its return value determines whether the block should be processed or not.
 
 See L</min_chunk_percent>.
 

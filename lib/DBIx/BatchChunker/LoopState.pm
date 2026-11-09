@@ -134,7 +134,8 @@ has end => (
     lazy     => 1,
     default  => sub {
         my $self = shift;
-        $self->start + $self->batch_chunker->chunk_size - 1;
+        my $bc   = $self->batch_chunker;
+        $self->start + $bc->chunk_size * $bc->id_increment - 1;
     },
 );
 
@@ -184,9 +185,9 @@ sub _reset_last_timings { shift->last_timings([]) }
 
 =head2 multiplier_range
 
-The range (in units of L</chunk_size>) between the start and end IDs.  This starts at 1
-(at the beginning of the loop), but may expand or shrink depending on chunk count checks.
-Resets after block processing.
+The range (in units of L</chunk_size> times L<DBIx::BatchChunker/id_increment>) between
+the start and end IDs.  This starts at 1 (at the beginning of the loop), but may expand
+or shrink depending on chunk count checks.  Resets after block processing.
 
 =cut
 
