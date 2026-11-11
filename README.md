@@ -4,7 +4,7 @@ DBIx::BatchChunker - Run large database changes safely
 
 # VERSION
 
-version v1.0.2
+version v1.0.3
 
 # SYNOPSIS
 
@@ -344,6 +344,24 @@ the right chunk size with a few test runs and set it here.
 
 (This was previously defaulted to 1000 rows, prior to v1.0.0.)
 
+### id\_increment
+
+The expected distance between consecutive IDs, such as MySQL's `auto_increment_increment`
+setting.  Each chunk covers a range of `chunk_size * id_increment` IDs, so that a
+chunk holds roughly ["chunk\_size"](#chunk_size) rows.
+
+For example, a Galera cluster that hands out every tenth ID only has 500 rows in every
+5000 IDs.  Without this setting, every chunk would start out at 10% of the expected row
+count, and [chunk resizing](#min_chunk_percent) would need several extra `COUNT` queries
+to expand each chunk to a reasonable size.
+
+This only changes the size of the ID range.  ["chunk\_size"](#chunk_size) and ["min\_chunk\_percent"](#min_chunk_percent)
+still count rows, and ["target\_time"](#target_time) still resizes chunks by rows.  The setting is a
+starting estimate, not a guarantee: chunk resizing still corrects ranges with more or
+fewer rows than expected, such as rows that were inserted under a different increment.
+
+Default is 1, which assumes that IDs are contiguous.
+
 ### target\_time
 
 The target runtime (in seconds) that chunk processing should strive to achieve, not
@@ -393,7 +411,8 @@ separate out the time math, like `6 * 60 * 60` for 6 hours.
 Boolean that controls whether to check past the ["max\_id"](#max_id) during the loop.  If the loop
 hits the end point, it will run another maximum ID check in the DB, and adjust `max_id`
 accordingly.  If it somehow cannot run a DB check (no ["rs"](#rs) or ["max\_stmt"](#max_stmt) available,
-for example), the last chunk will just be one at the end of `max_id + chunk_size`.
+for example), the last chunk will just be one at the end of
+`max_id + chunk_size * id_increment`.
 
 This is useful if the entire table is expected to be processed, and you don't want to
 miss any new rows that come up between ["calculate\_ranges"](#calculate_ranges) and the end of the loop.
@@ -427,6 +446,9 @@ This "chunk resizing" is useful for large regions of the table that have been de
 when the incrementing ID has large gaps in it for other reasons.  Wasting time on
 numerical gaps that span millions can slow down the processing considerably, especially
 if ["sleep"](#sleep) is enabled.
+
+If the gaps are regular, such as an auto-increment step larger than 1, set
+["id\_increment"](#id_increment) instead, so that chunks start at the right size and need no resizing.
 
 If this needs to be disabled, set this to 0.  The maximum chunk percentage does not have
 a setting and is hard-coded at `100% + min_chunk_percent`.
@@ -534,6 +556,7 @@ If either of the min/max statements don't return any ID data, this method will r
         single_rows       => 1,    # does $coderef get a single $row or the whole $chunk_rs / $stmt
         min_chunk_percent => 0.25, # minimum row count of chunk size percentage; defaults to 0.5 (or 50%)
         target_time       => 5,    # target runtime for dynamic chunk size scaling; default is 5 seconds
+        id_increment      => 10,   # distance between consecutive IDs; defaults to 1
         max_runtime       => 12 * 60 * 60, # stop processing after 12 hours
 
         progress_name => 'Updating Accounts',  # easier than creating your own progress_bar
@@ -572,8 +595,8 @@ See ["process\_past\_max"](#process_past_max).
 ## \_chunk\_count\_checker
 
 Checks the chunk count to make sure it's properly sized.  If not, it will try to shrink
-or expand the current chunk (in `chunk_size` increments) as necessary.  Its return value
-determines whether the block should be processed or not.
+or expand the current chunk (in `chunk_size * id_increment` increments) as
+necessary.  Its return value determines whether the block should be processed or not.
 
 See ["min\_chunk\_percent"](#min_chunk_percent).
 
@@ -632,7 +655,7 @@ Grant Street Group <developers@grantstreet.com>
 
 # COPYRIGHT AND LICENSE
 
-This software is Copyright (c) 2018 - 2025 by Grant Street Group.
+This software is Copyright (c) 2018 - 2026 by Grant Street Group.
 
 This is free software, licensed under:
 
