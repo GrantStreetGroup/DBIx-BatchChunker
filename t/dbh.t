@@ -31,6 +31,15 @@ my $db_file = $root->file('t', $FILE->basename.'.db');
 
 my $CHUNK_SIZE = 3;
 
+my $DEFAULT_SLEEP      = 0.5;  # the module's default sleep
+my $NO_SLEEP           = 0;
+my $CHUNK_WORK_TIME    = 0.1;  # simulated per-chunk DB work, in seconds
+my $FULL_SLEEP_RATIO   = 1;    # sleep for 100% of the chunk runtime
+my $HALF_SLEEP_RATIO   = 0.5;
+my $EXPLICIT_MIN_SLEEP = 0.3;  # higher than any proportional sleep in these tests
+my $PREV_RUNTIME       = 0.5;  # fake chunk runtime for status message tests
+my $QUICK_RUNTIME      = 0.1;  # a shorter fake chunk runtime
+
 # Enforce a real file SQLite DB if default
 unless ($CDTEST_DSN) {
     $CDTEST_DSN    = "dbi:SQLite:dbname=$db_file";
@@ -93,6 +102,119 @@ subtest 'Active DBI Processing (+ sleep)' => sub {
     cmp_ok($max_end,    '==', $batch_chunker->max_id,  'Final chunk ends at max_id');
     cmp_ok($total_time, '>=', $multiplier_range * 0.1, 'Slept ok');
     cmp_ok($total_time, '<',  $multiplier_range * 0.5, 'Did not oversleep');
+
+    # Remove the callback completely
+    my $dbh = $conn->dbh;
+    delete $dbh->{Callbacks}{ChildCallbacks}{execute};
+    delete $dbh->{Callbacks}{ChildCallbacks};
+    delete $dbh->{Callbacks};
+};
+
+subtest 'Active DBI Processing (+ sleep_ratio)' => sub {
+    my ($calls, $max_end) = (0, 0);
+
+    # Constructor
+    my $batch_chunker = DBIx::BatchChunker->new(
+        chunk_size => $CHUNK_SIZE,
+
+        dbi_connector => $conn,
+        min_stmt => 'SELECT MIN(trackid) FROM track WHERE position = 1',
+        max_stmt => 'SELECT MAX(trackid) FROM track WHERE position = 1',
+        stmt     => 'SELECT ?, ?',
+
+        target_time => 0,
+        sleep_ratio => $FULL_SLEEP_RATIO,
+        verbose     => 0,
+    );
+
+    is($batch_chunker->sleep, $NO_SLEEP, 'default sleep not applied with sleep_ratio');
+
+    # Simulate chunk work by sleeping a fixed time on each execute
+    $conn->dbh->{Callbacks} = {
+        ChildCallbacks => {
+            execute => sub {
+                my ($sth, $start, $end) = @_;
+                $max_end = max($max_end, $end);
+                $calls++;
+                sleep $CHUNK_WORK_TIME;
+                return;    # DBI callback cannot return anything
+            },
+        },
+    };
+
+    # Calculate
+    ok($batch_chunker->calculate_ranges, 'calculate_ranges ok');
+    ok(defined $batch_chunker->min_id,   'min_id ok');
+    ok(defined $batch_chunker->max_id,   'max_id ok');
+
+    my $range = $batch_chunker->max_id - $batch_chunker->min_id + 1;
+    my $multiplier_range = ceil($range / $CHUNK_SIZE);
+
+    # Process
+    my $start_time = time;
+    $batch_chunker->execute;
+    my $total_time = time - $start_time;
+    cmp_ok($calls,   '==', $multiplier_range,      'Right number of calls');
+    cmp_ok($max_end, '==', $batch_chunker->max_id, 'Final chunk ends at max_id');
+    cmp_ok($total_time, '>=', $multiplier_range * $CHUNK_WORK_TIME * (1 + $FULL_SLEEP_RATIO), 'Slept proportionally to the chunk runtime');
+    cmp_ok($total_time, '<',  $multiplier_range * $DEFAULT_SLEEP, 'Did not oversleep; default sleep was not applied');
+
+    # Remove the callback completely
+    my $dbh = $conn->dbh;
+    delete $dbh->{Callbacks}{ChildCallbacks}{execute};
+    delete $dbh->{Callbacks}{ChildCallbacks};
+    delete $dbh->{Callbacks};
+};
+
+subtest 'Active DBI Processing (+ sleep + sleep_ratio)' => sub {
+    my ($calls, $max_end) = (0, 0);
+
+    # Constructor
+    my $batch_chunker = DBIx::BatchChunker->new(
+        chunk_size => $CHUNK_SIZE,
+
+        dbi_connector => $conn,
+        min_stmt => 'SELECT MIN(trackid) FROM track WHERE position = 1',
+        max_stmt => 'SELECT MAX(trackid) FROM track WHERE position = 1',
+        stmt     => 'SELECT ?, ?',
+
+        target_time => 0,
+        sleep       => $EXPLICIT_MIN_SLEEP,
+        sleep_ratio => $FULL_SLEEP_RATIO,
+        verbose     => 0,
+    );
+
+    # Simulate chunk work by sleeping a fixed time on each execute
+    $conn->dbh->{Callbacks} = {
+        ChildCallbacks => {
+            execute => sub {
+                my ($sth, $start, $end) = @_;
+                $max_end = max($max_end, $end);
+                $calls++;
+                sleep $CHUNK_WORK_TIME;
+                return;    # DBI callback cannot return anything
+            },
+        },
+    };
+
+    # Calculate
+    ok($batch_chunker->calculate_ranges, 'calculate_ranges ok');
+    ok(defined $batch_chunker->min_id,   'min_id ok');
+    ok(defined $batch_chunker->max_id,   'max_id ok');
+
+    my $range = $batch_chunker->max_id - $batch_chunker->min_id + 1;
+    my $multiplier_range = ceil($range / $CHUNK_SIZE);
+
+    # Process
+    # Each chunk takes $CHUNK_WORK_TIME to run, so the proportional sleep is
+    # $CHUNK_WORK_TIME * $FULL_SLEEP_RATIO, below the $EXPLICIT_MIN_SLEEP bound.
+    my $start_time = time;
+    $batch_chunker->execute;
+    my $total_time = time - $start_time;
+    cmp_ok($calls,   '==', $multiplier_range,      'Right number of calls');
+    cmp_ok($max_end, '==', $batch_chunker->max_id, 'Final chunk ends at max_id');
+    cmp_ok($total_time, '>=', $multiplier_range * ($CHUNK_WORK_TIME + $EXPLICIT_MIN_SLEEP),     'sleep acted as a minimum bound');
+    cmp_ok($total_time, '<',  $multiplier_range * ($CHUNK_WORK_TIME + $EXPLICIT_MIN_SLEEP) * 2, 'Did not oversleep');
 
     # Remove the callback completely
     my $dbh = $conn->dbh;
@@ -473,6 +595,83 @@ subtest '_print_chunk_status with undef chunk_count' => sub {
     for my $msg (@captured_messages) {
         like($msg, qr/\?.*rows found/, "Status message shows '?' for unknown count: $msg");
     }
+};
+
+subtest '_print_chunk_status with sleep_ratio' => sub {
+    # Check that the status line reports the sleep time that was actually used:
+    # the proportional amount, or the explicit sleep when it acts as a minimum.
+    my %base_args = (
+        chunk_size => $CHUNK_SIZE,
+        min_id     => 1,
+        max_id     => 10,
+        coderef    => sub {},
+        verbose    => 1,
+    );
+
+    my $bc_ratio = DBIx::BatchChunker->new(%base_args, sleep_ratio => $HALF_SLEEP_RATIO);
+    my $bc_floor = DBIx::BatchChunker->new(
+        %base_args,
+        sleep       => $EXPLICIT_MIN_SLEEP,
+        sleep_ratio => $HALF_SLEEP_RATIO,
+    );
+
+    my @captured_messages;
+    {
+        no warnings 'redefine';
+        local *Term::ProgressBar::message = sub {
+            push @captured_messages, $_[1];
+        };
+
+        for my $bc ($bc_ratio, $bc_floor) {
+            my $ls = $bc->loop_state(DBIx::BatchChunker::LoopState->new({
+                batch_chunker => $bc,
+                progress_bar  => Term::ProgressBar->new({ count => 10, silent => 1 }),
+            }));
+            $ls->start(1);
+            $ls->end(3);
+            $ls->chunk_count(undef);
+            $ls->prev_runtime($PREV_RUNTIME);
+
+            $bc->_print_chunk_status('processed');
+            $bc->clear_loop_state;
+        }
+    }
+
+    # PREV_RUNTIME * HALF_SLEEP_RATIO seconds of proportional sleep
+    my $expected_proportional = sprintf '%.2f+%.2f sec runtime+sleep', $PREV_RUNTIME, $PREV_RUNTIME * $HALF_SLEEP_RATIO;
+    like($captured_messages[0], qr/\Q$expected_proportional\E/, 'status line shows the proportional sleep time');
+
+    # The proportional amount is below EXPLICIT_MIN_SLEEP, so the minimum wins
+    my $expected_floor = sprintf '%.2f+%.2f sec runtime+sleep', $PREV_RUNTIME, $EXPLICIT_MIN_SLEEP;
+    like($captured_messages[1], qr/\Q$expected_floor\E/, 'status line shows the sleep minimum when it exceeds the proportional sleep');
+};
+
+subtest 'sleep_time resets per chunk' => sub {
+    # The lazy sleep_time attribute must be recomputed from each chunk's
+    # prev_runtime; a stale value would silently inflate or deflate the sleep.
+    my $batch_chunker = DBIx::BatchChunker->new(
+        chunk_size  => $CHUNK_SIZE,
+        min_id      => 1,
+        max_id      => 10,
+        coderef     => sub {},
+        sleep_ratio => $FULL_SLEEP_RATIO,
+        verbose     => 0,
+    );
+
+    my $ls = $batch_chunker->loop_state(DBIx::BatchChunker::LoopState->new({
+        batch_chunker => $batch_chunker,
+        progress_bar  => Term::ProgressBar->new({ count => 10, silent => 1 }),
+    }));
+
+    $ls->start(1);
+    $ls->end(3);
+    $ls->prev_runtime($PREV_RUNTIME);
+    is($ls->sleep_time, $PREV_RUNTIME * $FULL_SLEEP_RATIO, 'sleep_time computed from prev_runtime');
+
+    $ls->_reset_chunk_state;
+
+    $ls->prev_runtime($QUICK_RUNTIME);
+    is($ls->sleep_time, $QUICK_RUNTIME * $FULL_SLEEP_RATIO, 'sleep_time recomputed after chunk state reset');
 };
 
 ############################################################

@@ -390,10 +390,32 @@ lot of disk I/O, you may want to consider a higher setting.  If the database ser
 spends too much time on processing, the replicas may have a hard time keeping up with
 standard load.
 
+If ["sleep\_ratio"](#sleep_ratio) is defined without an explicit `sleep`, the 0.5 second default is not
+applied, so fast chunks are not dominated by a fixed sleep.  If both are explicitly
+defined, `sleep` acts as a minimum bound on the proportional amount.
+
 This will increase the overall processing time of the loop, so try to find a balance
 between the two.
 
 (This was previously defaulted to 0 seconds, prior to v1.0.0.)
+
+### sleep\_ratio
+
+A proportional sleep time, expressed as a ratio of the previous chunk's runtime.  After
+each chunk, the loop sleeps for `sleep_ratio * chunk_runtime` seconds.  For example,
+a ratio of `0.10` sleeps for 10% of the time the previous chunk took to process: a chunk
+that processed in 0.03 seconds sleeps for 0.003 seconds, while one that took 30 seconds
+sleeps for 3 seconds.
+
+Because the ratio is relative to the chunk runtime, it scales across environments that
+process at different speeds, where a static ["sleep"](#sleep) would either dominate the runtime of
+fast chunks or fail to protect the database during slow chunks.
+
+If ["sleep"](#sleep) is also explicitly defined, it acts as a minimum bound on the sleep time, so
+that the database always gets some breathing room.  If only `sleep_ratio` is defined, the
+default ["sleep"](#sleep) of 0.5 seconds is not applied, and there is no minimum.
+
+Turned off by default.  Fractional numbers are allowed.
 
 ### max\_runtime
 
@@ -551,7 +573,8 @@ If either of the min/max statements don't return any ID data, this method will r
         coderef => $coderef,             # DIY database work; just pass the $start/$end IDs
 
         ### Optional but recommended ###
-        sleep             => 0.25, # number of seconds to sleep each chunk; defaults to 0
+        sleep             => 0.25, # number of seconds to sleep each chunk; defaults to 0.5
+        sleep_ratio       => 0.1,  # ...or sleep a proportion of each chunk's runtime; off by default
         process_past_max  => 1,    # use this if processing the whole table
         single_rows       => 1,    # does $coderef get a single $row or the whole $chunk_rs / $stmt
         min_chunk_percent => 0.25, # minimum row count of chunk size percentage; defaults to 0.5 (or 50%)

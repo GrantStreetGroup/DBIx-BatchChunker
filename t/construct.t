@@ -15,6 +15,12 @@ use CDTest;
 
 ############################################################
 
+my $DEFAULT_SLEEP        = 0.5;
+my $NO_SLEEP             = 0;
+my $SLEEP_RATIO          = 0.1;
+my $EXPLICIT_MIN_SLEEP   = 0.25;
+my $NEGATIVE_SLEEP_RATIO = -1.5;
+
 my $schema   = CDTest->init_schema;
 my $track_rs = $schema->resultset('Track')->search({ position => 1 });
 
@@ -40,6 +46,37 @@ subtest 'Valid construction' => sub {
         );
     }
     'constructor lives with different types of stmt coersion';
+};
+
+subtest 'sleep_ratio construction' => sub {
+    my %base_args = (
+        rs      => $track_rs,
+        coderef => sub {},
+    );
+
+    my $bc_default = DBIx::BatchChunker->new(%base_args);
+    is($bc_default->sleep,       $DEFAULT_SLEEP, 'sleep defaults to 0.5 without sleep_ratio');
+    is($bc_default->sleep_ratio, undef,          'sleep_ratio turned off by default');
+
+    my $bc_ratio = DBIx::BatchChunker->new(%base_args, sleep_ratio => $SLEEP_RATIO);
+    is($bc_ratio->sleep,       $NO_SLEEP,    'default sleep not applied when only sleep_ratio is defined');
+    is($bc_ratio->sleep_ratio, $SLEEP_RATIO, 'sleep_ratio recorded');
+
+    my $bc_both = DBIx::BatchChunker->new(
+        %base_args,
+        sleep_ratio => $SLEEP_RATIO,
+        sleep       => $EXPLICIT_MIN_SLEEP,
+    );
+    is($bc_both->sleep,       $EXPLICIT_MIN_SLEEP, 'explicit sleep kept as minimum bound with sleep_ratio');
+    is($bc_both->sleep_ratio, $SLEEP_RATIO,        'sleep_ratio recorded alongside explicit sleep');
+
+    like(
+        dies {
+            DBIx::BatchChunker->new(%base_args, sleep_ratio => $NEGATIVE_SLEEP_RATIO);
+        },
+        qr/Must be a number greater than or equal to zero .+sleep_ratio/,
+        'constructor dies with a negative sleep_ratio',
+    );
 };
 
 subtest 'Legacy syntax' => sub {
