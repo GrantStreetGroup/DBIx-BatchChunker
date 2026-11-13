@@ -11,6 +11,7 @@ use Types::Standard qw( InstanceOf ArrayRef HashRef Int Str Num Maybe );
 use Types::Numbers  qw( UnsignedInt PositiveNum PositiveOrZeroNum FloatSafeNum );
 use Type::Utils;
 
+use List::Util    qw( max );
 use Math::BigInt upgrade => 'Math::BigFloat';
 use Math::BigFloat;
 use Time::HiRes qw( time );
@@ -309,6 +310,34 @@ has prev_runtime => (
     default  => undef,
 );
 
+=head2 sleep_time
+
+The number of seconds to sleep after the current chunk.  Computed once per chunk, after
+L</prev_runtime> is set, from the parent BatchChunker's L<DBIx::BatchChunker/sleep> and
+L<DBIx::BatchChunker/sleep_ratio> attributes.  If both are defined, the larger of the two
+is used, making C<sleep> a minimum bound on the proportional amount.  Cleared with the
+rest of the per-chunk state.
+
+=cut
+
+has sleep_time => (
+    is      => 'rw',
+    isa     => PositiveOrZeroNum,
+    lazy    => 1,
+    clearer => '_clear_sleep_time',
+    default => sub {
+        my $self = shift;
+        my $bc   = $self->batch_chunker;
+
+        my $sleep = $bc->sleep;
+        if (defined $bc->sleep_ratio && defined $self->prev_runtime) {
+            $sleep = max($sleep, $bc->sleep_ratio * $self->prev_runtime);
+        }
+
+        return $sleep;
+    },
+);
+
 sub _reset_chunk_state {
     my $ls = shift;
     $ls->start   (undef);
@@ -319,6 +348,7 @@ sub _reset_chunk_state {
     $ls->multiplier_range(0);
     $ls->multiplier_step (1);
     $ls->checked_count   (0);
+    $ls->_clear_sleep_time;
 
     if ($ls->batch_chunker->_use_bignums) {
         $ls->multiplier_range( Math::BigFloat->new(0) );

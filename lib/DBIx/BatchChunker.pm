@@ -626,6 +626,10 @@ lot of disk I/O, you may want to consider a higher setting.  If the database ser
 spends too much time on processing, the replicas may have a hard time keeping up with
 standard load.
 
+If L</sleep_ratio> is defined without an explicit C<sleep>, the 0.5 second default is not
+applied, so fast chunks are not dominated by a fixed sleep.  If both are explicitly
+defined, C<sleep> acts as a minimum bound on the proportional amount.
+
 This will increase the overall processing time of the loop, so try to find a balance
 between the two.
 
@@ -637,7 +641,34 @@ has 'sleep' => (
     is       => 'ro',
     isa      => PositiveOrZeroNum,
     required => 0,
-    default  => 0.5,
+    lazy     => 1,
+    default  => sub { defined shift->sleep_ratio ? 0 : 0.5 },
+);
+
+=head3 sleep_ratio
+
+A proportional sleep time, expressed as a ratio of the previous chunk's runtime.  After
+each chunk, the loop sleeps for C<< sleep_ratio * chunk_runtime >> seconds.  For example,
+a ratio of C<0.10> sleeps for 10% of the time the previous chunk took to process: a chunk
+that processed in 0.03 seconds sleeps for 0.003 seconds, while one that took 30 seconds
+sleeps for 3 seconds.
+
+Because the ratio is relative to the chunk runtime, it scales across environments that
+process at different speeds, where a static L</sleep> would either dominate the runtime of
+fast chunks or fail to protect the database during slow chunks.
+
+If L</sleep> is also explicitly defined, it acts as a minimum bound on the sleep time, so
+that the database always gets some breathing room.  If only C<sleep_ratio> is defined, the
+default L</sleep> of 0.5 seconds is not applied, and there is no minimum.
+
+Turned off by default.  Fractional numbers are allowed.
+
+=cut
+
+has sleep_ratio => (
+    is       => 'ro',
+    isa      => PositiveOrZeroNum,
+    required => 0,
 );
 
 =head3 max_runtime
@@ -1143,7 +1174,8 @@ sub calculate_ranges {
         coderef => $coderef,             # DIY database work; just pass the $start/$end IDs
 
         ### Optional but recommended ###
-        sleep             => 0.25, # number of seconds to sleep each chunk; defaults to 0
+        sleep             => 0.25, # number of seconds to sleep each chunk; defaults to 0.5
+        sleep_ratio       => 0.1,  # ...or sleep a proportion of each chunk's runtime; off by default
         process_past_max  => 1,    # use this if processing the whole table
         single_rows       => 1,    # does $coderef get a single $row or the whole $chunk_rs / $stmt
         min_chunk_percent => 0.25, # minimum row count of chunk size percentage; defaults to 0.5 (or 50%)
@@ -1246,7 +1278,7 @@ sub execute {
         $ls->prev_runtime(time - $ls->chunk_timer);
 
         # Give the DB a little bit of breathing room
-        sleep $self->sleep if $self->sleep;
+        sleep $ls->sleep_time if $ls->sleep_time;
 
         $self->_print_chunk_status('processed');
         $self->_increment_progress;
@@ -1715,7 +1747,6 @@ sub _print_chunk_status {
     return unless $self->verbose;
 
     my $ls    = $self->loop_state;
-    my $sleep = $self->sleep || 0;
 
     # CLDR number formatters
     my $integer = $self->cldr->decimal_formatter;
@@ -1754,6 +1785,9 @@ sub _print_chunk_status {
     ) if $ls->chunk_count;
 
     if ($action eq 'processed') {
+        # Read the per-chunk sleep here, and not earlier: the lazy attribute must not
+        # materialize during chunk resizing, when prev_runtime is not being updated.
+        my $sleep = $ls->sleep_time;
         $message .= $sleep ?
             sprintf(
                 ', %5s+%s sec runtime+sleep',
